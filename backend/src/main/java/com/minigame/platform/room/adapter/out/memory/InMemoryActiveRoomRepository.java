@@ -3,6 +3,7 @@ package com.minigame.platform.room.adapter.out.memory;
 import com.minigame.platform.room.application.ActiveRoomRepository;
 import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomCode;
+import com.minigame.platform.room.domain.RoomEvent;
 import com.minigame.platform.room.domain.RoomId;
 import com.minigame.platform.room.domain.RoomRuleViolation;
 
@@ -45,19 +46,19 @@ public final class InMemoryActiveRoomRepository implements ActiveRoomRepository 
     }
 
     @Override
-    public Optional<Room> findById(RoomId roomId) {
-        return Optional.ofNullable(rooms.get(roomId)).map(RoomHandle::room);
+    public Optional<Room.Snapshot> findById(RoomId roomId) {
+        return Optional.ofNullable(rooms.get(roomId)).map(this::snapshot);
     }
 
     @Override
-    public Optional<Room> findByCode(RoomCode code) {
+    public Optional<Room.Snapshot> findByCode(RoomCode code) {
         var roomId = codeIndex.get(code);
         return roomId == null ? Optional.empty() : findById(roomId);
     }
 
     @Override
-    public List<Room> findAll() {
-        return rooms.values().stream().map(RoomHandle::room).toList();
+    public List<Room.Snapshot> findAll() {
+        return rooms.values().stream().map(this::snapshot).toList();
     }
 
     @Override
@@ -71,7 +72,7 @@ public final class InMemoryActiveRoomRepository implements ActiveRoomRepository 
     }
 
     @Override
-    public <T> T withRoom(RoomId roomId, Function<Room, T> command) {
+    public List<RoomEvent> withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command) {
         var handle = rooms.get(roomId);
         if (handle == null) {
             throw new RoomRuleViolation("ROOM_NOT_FOUND");
@@ -86,9 +87,26 @@ public final class InMemoryActiveRoomRepository implements ActiveRoomRepository 
 
     @Override
     public void remove(RoomId roomId) {
-        var handle = rooms.remove(roomId);
-        if (handle != null) {
-            codeIndex.remove(handle.room().snapshot().code(), roomId);
+        var handle = rooms.get(roomId);
+        if (handle == null) {
+            return;
+        }
+        handle.lock().lock();
+        try {
+            if (rooms.remove(roomId, handle)) {
+                codeIndex.remove(handle.room().snapshot().code(), roomId);
+            }
+        } finally {
+            handle.lock().unlock();
+        }
+    }
+
+    private Room.Snapshot snapshot(RoomHandle handle) {
+        handle.lock().lock();
+        try {
+            return handle.room().snapshot();
+        } finally {
+            handle.lock().unlock();
         }
     }
 

@@ -10,6 +10,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -21,8 +22,12 @@ class InMemoryActiveRoomRepositoryTest {
         var repository = new InMemoryActiveRoomRepository();
         repository.save(RoomFixture.emptyRoom());
 
-        assertThat(repository.findByCode(new RoomCode("482193"))).isPresent();
-        assertThat(repository.findById(RoomFixture.ROOM_ID)).isPresent();
+        var byCode = repository.findByCode(new RoomCode("482193")).orElseThrow();
+        var byId = repository.findById(RoomFixture.ROOM_ID).orElseThrow();
+
+        assertThat(byCode.id()).isEqualTo(RoomFixture.ROOM_ID);
+        assertThat(byId.code()).isEqualTo(RoomFixture.ROOM_CODE);
+        assertThat(repository.findAll()).containsExactly(byId);
     }
 
     @Test
@@ -95,6 +100,43 @@ class InMemoryActiveRoomRepositoryTest {
         }
 
         assertThat(maximumSimultaneousCallbacks).hasValue(1);
+    }
+
+    @Test
+    void snapshotReadWaitsForAnInFlightChangeAndReturnsItsCompletedState() throws Exception {
+        var repository = new InMemoryActiveRoomRepository();
+        repository.save(RoomFixture.emptyRoom());
+        var changed = new CountDownLatch(1);
+        var releaseChange = new CountDownLatch(1);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var change = executor.submit(() -> repository.withRoom(RoomFixture.ROOM_ID, room -> {
+                var events = room.changeReady(RoomFixture.HOST, true, "req-ready");
+                changed.countDown();
+                try {
+                    if (!releaseChange.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("change release timed out");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                }
+                return events;
+            }));
+            assertThat(changed.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var read = executor.submit(() -> repository.findById(RoomFixture.ROOM_ID).orElseThrow());
+            assertThatThrownBy(() -> read.get(100, TimeUnit.MILLISECONDS))
+                .isInstanceOf(TimeoutException.class);
+
+            releaseChange.countDown();
+            change.get(5, TimeUnit.SECONDS);
+            var snapshot = read.get(5, TimeUnit.SECONDS);
+            assertThat(snapshot.sequence()).isEqualTo(1);
+            assertThat(snapshot.participants())
+                .filteredOn(participant -> participant.actorId().equals(RoomFixture.HOST))
+                .allMatch(com.minigame.platform.room.domain.Participant::ready);
+        }
     }
 
     @Test

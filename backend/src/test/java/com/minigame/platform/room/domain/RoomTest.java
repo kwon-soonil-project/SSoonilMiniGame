@@ -31,7 +31,7 @@ class RoomTest {
 
         assertThatThrownBy(() -> room.updateSettings(
             RoomFixture.HOST,
-            new RoomSettings(GameType.LIAR, 3, 3, 30, 90, "all"),
+            new RoomSettings(GameType.DRAWING, 3, 3, 30, 90, "all"),
             "req-settings"
         ))
             .isInstanceOf(RoomRuleViolation.class)
@@ -41,6 +41,13 @@ class RoomTest {
     @Test
     void rejectsSettingsOutsideTheSelectedGamesParticipantRange() {
         assertThatThrownBy(() -> new RoomSettings(GameType.LIAR, 11, 3, 30, 90, "all"))
+            .isInstanceOf(RoomRuleViolation.class)
+            .hasMessageContaining("ROOM_MAX_PLAYERS_OUT_OF_RANGE");
+    }
+
+    @Test
+    void rejectsMaximumBelowTheSelectedGamesMinimumParticipantCount() {
+        assertThatThrownBy(() -> new RoomSettings(GameType.LIAR, 3, 3, 30, 90, "all"))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_MAX_PLAYERS_OUT_OF_RANGE");
     }
@@ -87,6 +94,43 @@ class RoomTest {
         assertThat(duplicate).isEmpty();
         assertThat(room.snapshot().participants()).hasSize(2);
         assertThat(room.snapshot().sequence()).isEqualTo(1);
+    }
+
+    @Test
+    void failedAuthorizationDoesNotConsumeTheRequestId() {
+        var room = RoomFixture.roomWithFourParticipants();
+        var next = room.snapshot().settings();
+
+        assertThatThrownBy(() -> room.updateSettings(RoomFixture.GUEST_1, next, "req-settings"))
+            .isInstanceOf(RoomRuleViolation.class)
+            .hasMessageContaining("ROOM_HOST_REQUIRED");
+        assertThatThrownBy(() -> room.updateSettings(RoomFixture.GUEST_1, next, "req-settings"))
+            .isInstanceOf(RoomRuleViolation.class)
+            .hasMessageContaining("ROOM_HOST_REQUIRED");
+    }
+
+    @Test
+    void failedCapacityCheckCanSucceedWithTheSameRequestIdAfterASeatOpens() {
+        var room = Room.create(
+            RoomFixture.ROOM_ID,
+            RoomFixture.ROOM_CODE,
+            "그림방",
+            Visibility.PUBLIC,
+            new RoomSettings(GameType.DRAWING, 2, 1, 80, 1, "all"),
+            RoomFixture.HOST,
+            "방장"
+        );
+        room.join(RoomFixture.GUEST_1, "참가자1", false, "req-join-1");
+
+        assertThatThrownBy(() -> room.join(RoomFixture.GUEST_2, "참가자2", false, "req-retry-join"))
+            .isInstanceOf(RoomRuleViolation.class)
+            .hasMessageContaining("ROOM_FULL");
+        room.leave(RoomFixture.GUEST_1, "req-leave");
+
+        assertThat(room.join(RoomFixture.GUEST_2, "참가자2", false, "req-retry-join")).hasSize(1);
+        assertThat(room.snapshot().participants())
+            .extracting(Participant::actorId)
+            .contains(RoomFixture.GUEST_2);
     }
 
     @Test

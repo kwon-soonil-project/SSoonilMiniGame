@@ -12,7 +12,8 @@ public record RoomSettings(
 ) {
     public RoomSettings {
         Objects.requireNonNull(gameType, "gameType");
-        if (maxParticipants < 1 || maxParticipants > gameType.maximumParticipants()) {
+        if (maxParticipants < gameType.minimumParticipants()
+            || maxParticipants > gameType.maximumParticipants()) {
             throw new RoomRuleViolation("ROOM_MAX_PLAYERS_OUT_OF_RANGE");
         }
         if (rounds < 1 || actionSeconds < 1 || discussionSeconds < 1) {
