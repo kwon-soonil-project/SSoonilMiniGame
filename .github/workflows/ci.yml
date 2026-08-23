@@ -136,9 +136,9 @@ jobs:
       CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
       CLOUD_RUN_SERVICE: minigame-preview
       CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}
-      DB_NAME: ${{ vars.DB_NAME }}
-      DB_PASSWORD_SECRET_NAME: ${{ vars.DB_PASSWORD_SECRET_NAME }}
-      DB_USER: ${{ vars.DB_USER }}
+      DB_NAME: minigame_preview
+      DB_PASSWORD_SECRET_NAME: minigame-preview-db-password
+      DB_USER: minigame_preview_app
       GCP_ARTIFACT_IMAGE: minigame
       GCP_ARTIFACT_REPOSITORY: minigame
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
