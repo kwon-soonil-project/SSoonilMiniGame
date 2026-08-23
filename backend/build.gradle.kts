@@ -9,6 +9,12 @@ version = "0.0.1-SNAPSHOT"
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 
+val portableBuildDirectory = File(
+    System.getProperty("java.io.tmpdir"),
+    "minigame-backend-${Integer.toUnsignedString(projectDir.absolutePath.hashCode(), 16)}"
+)
+layout.buildDirectory.set(portableBuildDirectory)
+
 repositories { mavenCentral() }
 
 dependencies {
