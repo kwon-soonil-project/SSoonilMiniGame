@@ -60,7 +60,7 @@ public class SecurityConfig {
     ) throws Exception {
         var sessionFilter = new SessionCookieAuthenticationFilter(tokenService);
         http
-                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/auth/guest"))
+                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/auth/guest", "/api/v1/rooms/**"))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(
