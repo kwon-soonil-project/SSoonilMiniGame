@@ -626,6 +626,7 @@ AWS로 이전할 경우 동일한 애플리케이션 이미지를 ECS/Fargate에
 - 검증 결과: 백엔드 전체 테스트 성공, 프론트엔드 `11`개 파일 `67`개 테스트 및 프로덕션 빌드 성공, 배포 계약 `6`개 성공, 컨테이너 기반 두 브라우저 방·채팅 E2E `2`개 성공.
 - Cloud Run·Artifact Registry·Cloud SQL Admin·Secret Manager·IAM Credentials·STS API를 활성화했다. Artifact Registry `minigame`, Cloud SQL `minigame-db`, 네 비밀값, 런타임·배포 서비스 계정, 저장소 subject로 제한한 Workload Identity Federation provider를 구성했다. 장기 서비스 계정 키는 만들지 않았다.
 - 같은 Cloud SQL 인스턴스 안에 운영 `minigame`/`minigame_app`과 프리뷰 `minigame_preview`/`minigame_preview_app`을 분리하고 각 비밀번호를 별도 Secret Manager 비밀로 저장했다. 운영 값은 GitHub `production` 환경 변수로 관리하고, 고정된 프리뷰 DB·사용자·Secret 이름은 배포 workflow에 명시해 운영 값과의 혼용을 막는다.
+- WebSocket allowed origin은 Cloud Run의 예측 가능한 URL 형식인 `서비스명-프로젝트번호.리전.run.app`을 환경별로 배포 workflow에 고정한다. 프리뷰와 운영 origin을 서로 분리하며, 커스텀 도메인을 연결할 때 이 목록을 함께 변경한다.
 
 #### 도구 호환성 기록
 
