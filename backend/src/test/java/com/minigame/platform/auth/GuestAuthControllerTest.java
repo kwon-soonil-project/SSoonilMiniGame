@@ -137,6 +137,18 @@ class GuestAuthControllerTest {
     }
 
     @Test
+    void leavesContainerReadinessProbeAnonymous() throws Exception {
+        mockMvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void leavesSpaErrorDispatchAnonymous() throws Exception {
+        mockMvc.perform(get("/error"))
+                .andExpect(result -> assertThat(result.getResponse().getStatus()).isNotEqualTo(401));
+    }
+
+    @Test
     void doesNotRetainTheRawSessionTokenAsAuthenticationCredentials() throws Exception {
         var token = tokenService.issue(
                 ActorPrincipal.guest(

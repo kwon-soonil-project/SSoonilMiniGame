@@ -83,6 +83,8 @@ public class SecurityConfig {
                                 "/api/v1/auth/guest",
                                 "/api/v1/csrf",
                                 "/actuator/health/liveness",
+                                "/actuator/health/readiness",
+                                "/error",
                                 "/oauth2/**",
                                 "/login/oauth2/**"
                         ).permitAll()
