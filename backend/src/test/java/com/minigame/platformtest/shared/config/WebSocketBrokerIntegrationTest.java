@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.messaging.Message;
@@ -35,6 +36,9 @@ import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.web.WebAppConfiguration;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.messaging.SessionConnectedEvent;
+import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -63,6 +67,9 @@ class WebSocketBrokerIntegrationTest {
     );
     private static final String SESSION_ID = "broker-session";
     private static final String DESTINATION = "/topic/rooms/" + ROOM_ID.value();
+    private static final String USER_DESTINATION = "/user/queue/rooms/" + ROOM_ID.value();
+    private static final String USER_BROKER_DESTINATION =
+            "/queue/rooms/" + ROOM_ID.value() + "-user" + SESSION_ID;
     private static final Pattern SEQUENCE_JSON = Pattern.compile("\\\"sequence\\\":(\\d+)");
 
     @Autowired
@@ -83,6 +90,9 @@ class WebSocketBrokerIntegrationTest {
     @Qualifier("brokerMessagingTemplate")
     SimpMessagingTemplate brokerMessaging;
 
+    @Autowired
+    ApplicationEventPublisher applicationEvents;
+
     private MessageHandler outboundHandler;
 
     @BeforeEach
@@ -102,7 +112,15 @@ class WebSocketBrokerIntegrationTest {
     @AfterEach
     void removeHandler() {
         if (outboundHandler != null) {
-            clientInbound.send(stomp(StompCommand.DISCONNECT, null, null));
+            var disconnect = stomp(StompCommand.DISCONNECT, null, null);
+            clientInbound.send(disconnect);
+            applicationEvents.publishEvent(new SessionDisconnectEvent(
+                    this,
+                    disconnect,
+                    SESSION_ID,
+                    CloseStatus.NORMAL,
+                    ACTOR
+            ));
             clientOutbound.unsubscribe(outboundHandler);
         }
     }
@@ -158,7 +176,52 @@ class WebSocketBrokerIntegrationTest {
         assertThat(delivery.get().await(300, TimeUnit.MILLISECONDS)).isFalse();
     }
 
+    @Test
+    void dropsActualPrivateRoomDeliveryAfterTheSubscriberLeaves() throws Exception {
+        var delivery = new AtomicReference<>(new CountDownLatch(1));
+        connectAndSubscribe(
+                USER_DESTINATION,
+                USER_BROKER_DESTINATION,
+                "private-room-subscription",
+                message -> {
+                    if (eventSequence(message) != null) {
+                        delivery.get().countDown();
+                    }
+                }
+        );
+
+        brokerMessaging.convertAndSendToUser(
+                ACTOR.getName(),
+                "/queue/rooms/" + ROOM_ID.value(),
+                event(1L)
+        );
+        assertThat(delivery.get().await(5, TimeUnit.SECONDS)).isTrue();
+
+        delivery.set(new CountDownLatch(1));
+        rooms.withRoom(ROOM_ID, room -> room.leave(
+                ACTOR.actorId(),
+                "00000000-0000-0000-0000-000000005303"
+        ));
+
+        brokerMessaging.convertAndSendToUser(
+                ACTOR.getName(),
+                "/queue/rooms/" + ROOM_ID.value(),
+                event(2L)
+        );
+
+        assertThat(delivery.get().await(300, TimeUnit.MILLISECONDS)).isFalse();
+    }
+
     private void connectAndSubscribe(MessageHandler handler) throws Exception {
+        connectAndSubscribe(DESTINATION, DESTINATION, "room-subscription", handler);
+    }
+
+    private void connectAndSubscribe(
+            String subscriptionDestination,
+            String brokerDestination,
+            String subscriptionId,
+            MessageHandler handler
+    ) throws Exception {
         var connected = new CountDownLatch(1);
         outboundHandler = message -> {
             var accessor = StompHeaderAccessor.wrap(message);
@@ -168,27 +231,29 @@ class WebSocketBrokerIntegrationTest {
             handler.handleMessage(message);
         };
         clientOutbound.subscribe(outboundHandler);
-        clientInbound.send(stomp(StompCommand.CONNECT, null, null));
+        var connect = stomp(StompCommand.CONNECT, null, null);
+        clientInbound.send(connect);
         assertThat(connected.await(5, TimeUnit.SECONDS)).isTrue();
+        applicationEvents.publishEvent(new SessionConnectedEvent(this, connect, ACTOR));
         var subscription = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
         subscription.setSessionId(SESSION_ID);
         subscription.setUser(ACTOR);
-        subscription.setDestination(DESTINATION);
-        subscription.setSubscriptionId("room-subscription");
+        subscription.setDestination(subscriptionDestination);
+        subscription.setSubscriptionId(subscriptionId);
         subscription.setLeaveMutable(true);
         clientInbound.send(MessageBuilder.createMessage(new byte[0], subscription.getMessageHeaders()));
-        assertThat(awaitSubscription()).isTrue();
+        assertThat(awaitSubscription(brokerDestination, subscriptionId)).isTrue();
     }
 
-    private boolean awaitSubscription() {
+    private boolean awaitSubscription(String destination, String subscriptionId) {
         var lookup = SimpMessageHeaderAccessor.create(SimpMessageType.MESSAGE);
-        lookup.setDestination(DESTINATION);
+        lookup.setDestination(destination);
         lookup.setLeaveMutable(true);
         var message = MessageBuilder.createMessage(new byte[0], lookup.getMessageHeaders());
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (System.nanoTime() < deadline) {
             var subscriptions = simpleBroker.getSubscriptionRegistry().findSubscriptions(message);
-            if (subscriptions.getOrDefault(SESSION_ID, List.of()).contains("room-subscription")) {
+            if (subscriptions.getOrDefault(SESSION_ID, List.of()).contains(subscriptionId)) {
                 return true;
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
@@ -198,7 +263,14 @@ class WebSocketBrokerIntegrationTest {
 
     private static Long outboundSequence(Message<?> message) {
         var accessor = StompHeaderAccessor.wrap(message);
-        if (!DESTINATION.equals(accessor.getDestination()) || !(message.getPayload() instanceof byte[] bytes)) {
+        if (!DESTINATION.equals(accessor.getDestination())) {
+            return null;
+        }
+        return eventSequence(message);
+    }
+
+    private static Long eventSequence(Message<?> message) {
+        if (!(message.getPayload() instanceof byte[] bytes)) {
             return null;
         }
         var matcher = SEQUENCE_JSON.matcher(new String(bytes, StandardCharsets.UTF_8));

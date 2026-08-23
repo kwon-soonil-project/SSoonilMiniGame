@@ -16,6 +16,7 @@ import org.springframework.http.server.ServletServerHttpRequest;
 import org.springframework.http.server.ServletServerHttpResponse;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.messaging.simp.SimpMessageType;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
@@ -235,6 +236,9 @@ final class RoomOutboundBoundaryInterceptor implements org.springframework.messa
     private static final Pattern ROOM_DELIVERY = Pattern.compile(
             "^/(?:topic|queue)/rooms/([0-9a-fA-F-]{36})$"
     );
+    private static final Pattern USER_ROOM_DELIVERY = Pattern.compile(
+            "^/user/queue/rooms/([0-9a-fA-F-]{36})$"
+    );
 
     private final ActiveRoomRepository rooms;
     private final StompSessionActors sessionActors;
@@ -250,20 +254,12 @@ final class RoomOutboundBoundaryInterceptor implements org.springframework.messa
         if (accessor.getMessageType() != SimpMessageType.MESSAGE) {
             return message;
         }
-        var matcher = ROOM_DELIVERY.matcher(
-                accessor.getDestination() == null ? "" : accessor.getDestination()
-        );
-        if (!matcher.matches()) {
+        var roomId = roomIdForDelivery(accessor);
+        if (roomId == null) {
             return message;
         }
         var actor = sessionActors.find(accessor.getSessionId()).orElse(null);
         if (actor == null) {
-            return null;
-        }
-        final RoomId roomId;
-        try {
-            roomId = new RoomId(UUID.fromString(matcher.group(1)));
-        } catch (IllegalArgumentException exception) {
             return null;
         }
         var participant = rooms.findById(roomId)
@@ -271,6 +267,36 @@ final class RoomOutboundBoundaryInterceptor implements org.springframework.messa
                 .flatMap(room -> room.participants().stream())
                 .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
         return participant ? message : null;
+    }
+
+    private static RoomId roomIdForDelivery(StompHeaderAccessor accessor) {
+        var destination = accessor.getDestination() == null ? "" : accessor.getDestination();
+        var direct = ROOM_DELIVERY.matcher(destination);
+        if (direct.matches()) {
+            return parseRoomId(direct.group(1));
+        }
+        var original = accessor.getFirstNativeHeader(SimpMessageHeaderAccessor.ORIGINAL_DESTINATION);
+        var user = USER_ROOM_DELIVERY.matcher(original == null ? "" : original);
+        if (!user.matches()) {
+            return null;
+        }
+        var sessionId = accessor.getSessionId();
+        if (sessionId == null) {
+            throw new AccessDeniedException("Invalid private room destination");
+        }
+        var expectedDestination = "/queue/rooms/" + user.group(1) + "-user" + sessionId;
+        if (!expectedDestination.equals(destination)) {
+            throw new AccessDeniedException("Invalid private room destination");
+        }
+        return parseRoomId(user.group(1));
+    }
+
+    private static RoomId parseRoomId(String value) {
+        try {
+            return new RoomId(UUID.fromString(value));
+        } catch (IllegalArgumentException exception) {
+            throw new AccessDeniedException("Invalid room destination", exception);
+        }
     }
 }
 
