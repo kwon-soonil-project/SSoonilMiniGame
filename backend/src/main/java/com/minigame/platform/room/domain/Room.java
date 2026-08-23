@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 
 public final class Room {
     private static final int REMEMBERED_REQUEST_LIMIT = 1_024;
@@ -19,8 +20,8 @@ public final class Room {
     private final String title;
     private final Visibility visibility;
     private final Map<ActorId, Participant> participants = new LinkedHashMap<>();
-    private final Set<String> processedRequestIds = new HashSet<>();
-    private final ArrayDeque<String> processedRequestOrder = new ArrayDeque<>();
+    private final Set<ProcessedRequest> processedRequests = new HashSet<>();
+    private final ArrayDeque<ProcessedRequest> processedRequestOrder = new ArrayDeque<>();
     private RoomSettings settings;
     private RoomStatus status;
     private ActorId hostId;
@@ -62,7 +63,8 @@ public final class Room {
     }
 
     public List<RoomEvent> join(ActorId actorId, String nickname, boolean spectator, String requestId) {
-        if (isProcessed(requestId)) {
+        var request = processedRequest(actorId, CommandType.JOIN, requestId);
+        if (processedRequests.contains(request)) {
             return List.of();
         }
         requireOpen();
@@ -74,11 +76,12 @@ public final class Room {
         }
         var participant = new Participant(actorId, nickname, false, spectator, nextJoinedOrder++);
         participants.put(actorId, participant);
-        return complete(requestId, List.of(new RoomEvent.ParticipantJoined(nextSequence(), participant)));
+        return complete(request, List.of(new RoomEvent.ParticipantJoined(nextSequence(), participant)));
     }
 
     public List<RoomEvent> changeReady(ActorId actorId, boolean ready, String requestId) {
-        if (isProcessed(requestId)) {
+        var request = processedRequest(actorId, CommandType.CHANGE_READY, requestId);
+        if (processedRequests.contains(request)) {
             return List.of();
         }
         if (status != RoomStatus.WAITING) {
@@ -89,11 +92,12 @@ public final class Room {
             throw new RoomRuleViolation("ROOM_SPECTATOR_CANNOT_READY");
         }
         participants.put(actorId, participant.withReady(ready));
-        return complete(requestId, List.of(new RoomEvent.ReadyChanged(nextSequence(), actorId, ready)));
+        return complete(request, List.of(new RoomEvent.ReadyChanged(nextSequence(), actorId, ready)));
     }
 
     public List<RoomEvent> updateSettings(ActorId actorId, RoomSettings next, String requestId) {
-        if (isProcessed(requestId)) {
+        var request = processedRequest(actorId, CommandType.UPDATE_SETTINGS, requestId);
+        if (processedRequests.contains(request)) {
             return List.of();
         }
         requireHost(actorId);
@@ -106,11 +110,12 @@ public final class Room {
         }
         settings = next;
         participants.replaceAll((id, participant) -> participant.withReady(false));
-        return complete(requestId, List.of(new RoomEvent.SettingsUpdated(nextSequence(), next)));
+        return complete(request, List.of(new RoomEvent.SettingsUpdated(nextSequence(), next)));
     }
 
     public List<RoomEvent> transferHost(ActorId actorId, ActorId nextHostId, String requestId) {
-        if (isProcessed(requestId)) {
+        var request = processedRequest(actorId, CommandType.TRANSFER_HOST, requestId);
+        if (processedRequests.contains(request)) {
             return List.of();
         }
         requireOpen();
@@ -125,13 +130,14 @@ public final class Room {
         var previousHostId = hostId;
         hostId = nextHostId;
         return complete(
-            requestId,
+            request,
             List.of(new RoomEvent.HostTransferred(nextSequence(), previousHostId, nextHostId))
         );
     }
 
     public List<RoomEvent> leave(ActorId actorId, String requestId) {
-        if (isProcessed(requestId)) {
+        var request = processedRequest(actorId, CommandType.LEAVE, requestId);
+        if (processedRequests.contains(request)) {
             return List.of();
         }
         requireOpen();
@@ -142,7 +148,7 @@ public final class Room {
         if (participants.isEmpty()) {
             status = RoomStatus.CLOSED;
             events.add(new RoomEvent.RoomClosed(nextSequence()));
-            return complete(requestId, events);
+            return complete(request, events);
         }
         if (hostId.equals(actorId)) {
             var replacement = participants.values().stream()
@@ -151,12 +157,12 @@ public final class Room {
             if (replacement.isEmpty()) {
                 status = RoomStatus.CLOSED;
                 events.add(new RoomEvent.RoomClosed(nextSequence()));
-                return complete(requestId, events);
+                return complete(request, events);
             }
             hostId = replacement.orElseThrow().actorId();
             events.add(new RoomEvent.HostTransferred(nextSequence(), actorId, hostId));
         }
-        return complete(requestId, events);
+        return complete(request, events);
     }
 
     public Snapshot snapshot() {
@@ -173,18 +179,26 @@ public final class Room {
         );
     }
 
-    private boolean isProcessed(String requestId) {
-        if (requestId == null || requestId.isBlank()) {
-            throw new RoomRuleViolation("ROOM_REQUEST_ID_REQUIRED");
+    private ProcessedRequest processedRequest(ActorId actorId, CommandType commandType, String requestId) {
+        if (requestId == null || requestId.length() != 36) {
+            throw new RoomRuleViolation("ROOM_REQUEST_ID_INVALID");
         }
-        return processedRequestIds.contains(requestId);
+        try {
+            var value = UUID.fromString(requestId);
+            if (!value.toString().equalsIgnoreCase(requestId)) {
+                throw new RoomRuleViolation("ROOM_REQUEST_ID_INVALID");
+            }
+            return new ProcessedRequest(actorId, commandType, value);
+        } catch (IllegalArgumentException exception) {
+            throw new RoomRuleViolation("ROOM_REQUEST_ID_INVALID");
+        }
     }
 
-    private List<RoomEvent> complete(String requestId, List<RoomEvent> events) {
-        processedRequestIds.add(requestId);
-        processedRequestOrder.addLast(requestId);
+    private List<RoomEvent> complete(ProcessedRequest request, List<RoomEvent> events) {
+        processedRequests.add(request);
+        processedRequestOrder.addLast(request);
         if (processedRequestOrder.size() > REMEMBERED_REQUEST_LIMIT) {
-            processedRequestIds.remove(processedRequestOrder.removeFirst());
+            processedRequests.remove(processedRequestOrder.removeFirst());
         }
         return List.copyOf(events);
     }
@@ -228,5 +242,16 @@ public final class Room {
         long sequence,
         List<Participant> participants
     ) {
+    }
+
+    private record ProcessedRequest(ActorId actorId, CommandType commandType, UUID requestId) {
+    }
+
+    private enum CommandType {
+        JOIN,
+        CHANGE_READY,
+        UPDATE_SETTINGS,
+        TRANSFER_HOST,
+        LEAVE
     }
 }

@@ -1,6 +1,7 @@
 package com.minigame.platform.room.adapter.out.memory;
 
 import com.minigame.platform.room.application.ActiveRoomRepository;
+import com.minigame.platform.room.application.RoomMutationResult;
 import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomCode;
 import com.minigame.platform.room.domain.RoomEvent;
@@ -72,14 +73,15 @@ public final class InMemoryActiveRoomRepository implements ActiveRoomRepository 
     }
 
     @Override
-    public List<RoomEvent> withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command) {
+    public RoomMutationResult withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command) {
         var handle = rooms.get(roomId);
         if (handle == null) {
             throw new RoomRuleViolation("ROOM_NOT_FOUND");
         }
         handle.lock().lock();
         try {
-            return command.apply(handle.room());
+            var events = command.apply(handle.room());
+            return new RoomMutationResult(events, handle.room().snapshot());
         } finally {
             handle.lock().unlock();
         }

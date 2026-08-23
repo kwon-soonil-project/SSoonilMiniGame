@@ -20,7 +20,7 @@ public interface ActiveRoomRepository {
 
     RoomCode generateCode();
 
-    List<RoomEvent> withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command);
+    RoomMutationResult withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command);
 
     void remove(RoomId roomId);
 }

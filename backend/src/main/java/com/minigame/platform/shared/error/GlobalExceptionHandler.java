@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.Map;
-import java.util.UUID;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -20,14 +19,16 @@ public class GlobalExceptionHandler {
             "ROOM_PASSWORD_INVALID", HttpStatus.FORBIDDEN,
             "ROOM_PARTICIPANT_NOT_FOUND", HttpStatus.FORBIDDEN,
             "ROOM_FULL", HttpStatus.CONFLICT,
-            "ROOM_MAX_PLAYERS_TOO_SMALL", HttpStatus.CONFLICT
+            "ROOM_MAX_PLAYERS_TOO_SMALL", HttpStatus.CONFLICT,
+            "ROOM_REQUEST_ID_INVALID", HttpStatus.BAD_REQUEST
     );
     private static final Map<String, String> MESSAGES = Map.of(
             "ROOM_NOT_FOUND", "방을 찾을 수 없습니다.",
             "ROOM_PASSWORD_INVALID", "방 비밀번호가 올바르지 않습니다.",
             "ROOM_PARTICIPANT_NOT_FOUND", "방 참가자만 요청할 수 있습니다.",
             "ROOM_FULL", "방의 참가 인원이 가득 찼습니다.",
-            "ROOM_MAX_PLAYERS_TOO_SMALL", "현재 참가 인원보다 최대 인원을 작게 설정할 수 없습니다."
+            "ROOM_MAX_PLAYERS_TOO_SMALL", "현재 참가 인원보다 최대 인원을 작게 설정할 수 없습니다.",
+            "ROOM_REQUEST_ID_INVALID", "요청 ID는 UUID 형식이어야 합니다."
     );
 
     @ExceptionHandler(RoomRuleViolation.class)
@@ -40,6 +41,19 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<ApiError> validation(MethodArgumentNotValidException exception, HttpServletRequest request) {
         return response(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "입력값을 확인해 주세요.", request);
+    }
+
+    @ExceptionHandler(InvalidRequestIdException.class)
+    ResponseEntity<ApiError> invalidRequestId(
+            InvalidRequestIdException exception,
+            HttpServletRequest request
+    ) {
+        return response(
+                HttpStatus.BAD_REQUEST,
+                "ROOM_REQUEST_ID_INVALID",
+                "요청 ID는 UUID 형식이어야 합니다.",
+                request
+        );
     }
 
     @ExceptionHandler({
@@ -57,14 +71,6 @@ public class GlobalExceptionHandler {
             String message,
             HttpServletRequest request
     ) {
-        return ResponseEntity.status(status).body(new ApiError(code, message, requestId(request)));
-    }
-
-    private static String requestId(HttpServletRequest request) {
-        var supplied = request.getHeader("X-Request-Id");
-        if (supplied != null && supplied.length() <= 128 && supplied.matches("[A-Za-z0-9._:-]+")) {
-            return supplied;
-        }
-        return UUID.randomUUID().toString();
+        return ResponseEntity.status(status).body(new ApiError(code, message, RequestIds.correlationId(request)));
     }
 }

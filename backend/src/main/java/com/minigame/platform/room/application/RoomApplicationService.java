@@ -68,10 +68,17 @@ public class RoomApplicationService {
                 actor.actorId(),
                 actor.nickname()
         );
-        repository.save(room);
         var normalizedPassword = normalizePassword(password);
         if (normalizedPassword != null) {
-            passwordHashes.put(room.snapshot().id(), passwordEncoder.encode(normalizedPassword));
+            var encodedPassword = passwordEncoder.encode(normalizedPassword);
+            passwordHashes.put(room.snapshot().id(), encodedPassword);
+        }
+        try {
+            repository.save(room);
+        } catch (RuntimeException exception) {
+            repository.remove(room.snapshot().id());
+            passwordHashes.remove(room.snapshot().id());
+            throw exception;
         }
         return snapshotView(room.snapshot());
     }
@@ -85,11 +92,11 @@ public class RoomApplicationService {
         Objects.requireNonNull(actor, "actor");
         var discovered = repository.findByCode(code).orElseThrow(() -> violation("ROOM_NOT_FOUND"));
         verifyPassword(discovered.id(), password);
-        repository.withRoom(
+        var result = repository.withRoom(
                 discovered.id(),
                 room -> room.join(actor.actorId(), actor.nickname(), false, requestId)
         );
-        return snapshotView(find(discovered.id()));
+        return snapshotView(result.snapshot());
     }
 
     public RoomSnapshotView snapshot(ActorPrincipal actor, RoomId roomId) {
@@ -105,9 +112,8 @@ public class RoomApplicationService {
 
     public void leave(ActorPrincipal actor, RoomId roomId, String requestId) {
         Objects.requireNonNull(actor, "actor");
-        repository.withRoom(roomId, room -> room.leave(actor.actorId(), requestId));
-        var snapshot = find(roomId);
-        if (snapshot.status() == RoomStatus.CLOSED) {
+        var result = repository.withRoom(roomId, room -> room.leave(actor.actorId(), requestId));
+        if (result.snapshot().status() == RoomStatus.CLOSED) {
             repository.remove(roomId);
             passwordHashes.remove(roomId);
         }

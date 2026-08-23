@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
+import static com.minigame.platform.shared.error.RequestIds.commandId;
+
 import static com.minigame.platform.room.adapter.in.web.RoomWebDtos.CreateRoomRequest;
 import static com.minigame.platform.room.adapter.in.web.RoomWebDtos.JoinRoomRequest;
 import static com.minigame.platform.room.adapter.in.web.RoomWebDtos.RoomSnapshotResponse;
@@ -54,7 +56,7 @@ public class RoomController {
             HttpServletRequest servletRequest
     ) {
         return RoomWebDtos.from(
-                rooms.join(actor, new RoomCode(code), request.password(), requestId(servletRequest))
+                rooms.join(actor, new RoomCode(code), request.password(), commandId(servletRequest))
         );
     }
 
@@ -72,12 +74,7 @@ public class RoomController {
             @PathVariable UUID roomId,
             HttpServletRequest servletRequest
     ) {
-        rooms.leave(actor, new RoomId(roomId), requestId(servletRequest));
+        rooms.leave(actor, new RoomId(roomId), commandId(servletRequest));
         return ResponseEntity.noContent().build();
-    }
-
-    private static String requestId(HttpServletRequest request) {
-        var supplied = request.getHeader("X-Request-Id");
-        return supplied == null || supplied.isBlank() ? UUID.randomUUID().toString() : supplied;
     }
 }

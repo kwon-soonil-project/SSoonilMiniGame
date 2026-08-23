@@ -5,19 +5,21 @@ import com.minigame.platform.auth.adapter.in.web.SessionCookieAuthenticationFilt
 import com.minigame.platform.auth.adapter.out.persistence.MemberRepository;
 import com.minigame.platform.auth.application.SessionTokenService;
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.shared.error.ApiErrorWriter;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
-import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
+import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -56,11 +58,20 @@ public class SecurityConfig {
     SecurityFilterChain applicationSecurity(
             HttpSecurity http,
             SessionTokenService tokenService,
-            ObjectProvider<GoogleOAuthSuccessHandler> googleSuccessHandler
+            ObjectProvider<GoogleOAuthSuccessHandler> googleSuccessHandler,
+            JsonMapper jsonMapper
     ) throws Exception {
         var sessionFilter = new SessionCookieAuthenticationFilter(tokenService);
+        var csrfRepository = CookieCsrfTokenRepository.withHttpOnlyFalse();
+        csrfRepository.setCookiePath("/");
+        var csrfRequestHandler = new CsrfTokenRequestAttributeHandler();
+        csrfRequestHandler.setCsrfRequestAttributeName("_csrf");
         http
-                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/auth/guest", "/api/v1/rooms/**"))
+                .csrf(csrf -> csrf
+                        .csrfTokenRepository(csrfRepository)
+                        .csrfTokenRequestHandler(csrfRequestHandler)
+                        .ignoringRequestMatchers("/api/v1/auth/guest")
+                )
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(
@@ -70,6 +81,7 @@ public class SecurityConfig {
                                 "/assets/**",
                                 "/static/**",
                                 "/api/v1/auth/guest",
+                                "/api/v1/csrf",
                                 "/actuator/health/liveness",
                                 "/oauth2/**",
                                 "/login/oauth2/**"
@@ -81,7 +93,22 @@ public class SecurityConfig {
                         ))
                 )
                 .exceptionHandling(exceptions -> exceptions
-                        .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
+                        .authenticationEntryPoint((request, response, exception) -> ApiErrorWriter.write(
+                                jsonMapper,
+                                request,
+                                response,
+                                401,
+                                "UNAUTHORIZED",
+                                "로그인이 필요합니다."
+                        ))
+                        .accessDeniedHandler((request, response, exception) -> ApiErrorWriter.write(
+                                jsonMapper,
+                                request,
+                                response,
+                                403,
+                                "FORBIDDEN",
+                                "요청 권한이 없습니다."
+                        ))
                 )
                 .addFilterBefore(sessionFilter, AnonymousAuthenticationFilter.class);
 

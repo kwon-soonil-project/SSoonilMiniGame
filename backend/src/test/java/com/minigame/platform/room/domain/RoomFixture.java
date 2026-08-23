@@ -3,6 +3,7 @@ package com.minigame.platform.room.domain;
 import com.minigame.platform.auth.domain.ActorId;
 
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 
 public final class RoomFixture {
     public static final ActorId HOST = new ActorId("host-1");
@@ -29,9 +30,13 @@ public final class RoomFixture {
 
     public static Room roomWithFourParticipants() {
         var room = emptyRoom();
-        room.join(GUEST_1, "참가자1", false, "req-join-1");
-        room.join(GUEST_2, "참가자2", false, "req-join-2");
-        room.join(GUEST_3, "참가자3", false, "req-join-3");
+        room.join(GUEST_1, "참가자1", false, requestId("fixture-join-1"));
+        room.join(GUEST_2, "참가자2", false, requestId("fixture-join-2"));
+        room.join(GUEST_3, "참가자3", false, requestId("fixture-join-3"));
         return room;
+    }
+
+    public static String requestId(String name) {
+        return UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8)).toString();
     }
 }

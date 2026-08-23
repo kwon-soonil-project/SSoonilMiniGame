@@ -10,13 +10,13 @@ class RoomTest {
     @Test
     void settingChangeClearsEveryReadyParticipant() {
         var room = RoomFixture.roomWithFourParticipants();
-        room.changeReady(RoomFixture.HOST, true, "req-ready-host");
-        room.changeReady(RoomFixture.GUEST_1, true, "req-ready-guest");
+        room.changeReady(RoomFixture.HOST, true, RoomFixture.requestId("ready-host"));
+        room.changeReady(RoomFixture.GUEST_1, true, RoomFixture.requestId("ready-guest"));
 
         var events = room.updateSettings(
             RoomFixture.HOST,
             new RoomSettings(GameType.LIAR, 10, 3, 30, 90, "family"),
-            "req-settings"
+            RoomFixture.requestId("clear-ready-settings")
         );
 
         assertThat(room.snapshot().participants()).allMatch(participant -> !participant.ready());
@@ -32,7 +32,7 @@ class RoomTest {
         assertThatThrownBy(() -> room.updateSettings(
             RoomFixture.HOST,
             new RoomSettings(GameType.DRAWING, 3, 3, 30, 90, "all"),
-            "req-settings"
+            RoomFixture.requestId("max-below-current")
         ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_MAX_PLAYERS_TOO_SMALL");
@@ -59,7 +59,7 @@ class RoomTest {
         assertThatThrownBy(() -> room.updateSettings(
             RoomFixture.GUEST_1,
             room.snapshot().settings(),
-            "req-settings"
+            RoomFixture.requestId("only-host-settings")
         ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_HOST_REQUIRED");
@@ -76,9 +76,14 @@ class RoomTest {
             RoomFixture.HOST,
             "방장"
         );
-        room.join(RoomFixture.GUEST_1, "참가자1", false, "req-join-1");
+        room.join(RoomFixture.GUEST_1, "참가자1", false, RoomFixture.requestId("capacity-join-1"));
 
-        assertThatThrownBy(() -> room.join(RoomFixture.GUEST_2, "참가자2", false, "req-join-2"))
+        assertThatThrownBy(() -> room.join(
+            RoomFixture.GUEST_2,
+            "참가자2",
+            false,
+            RoomFixture.requestId("capacity-join-2")
+        ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_FULL");
     }
@@ -87,8 +92,9 @@ class RoomTest {
     void duplicateRequestDoesNotApplyTheSameCommandTwice() {
         var room = RoomFixture.emptyRoom();
 
-        var first = room.join(RoomFixture.GUEST_1, "참가자1", false, "req-join");
-        var duplicate = room.join(RoomFixture.GUEST_1, "참가자1", false, "req-join");
+        var requestId = RoomFixture.requestId("duplicate-join");
+        var first = room.join(RoomFixture.GUEST_1, "참가자1", false, requestId);
+        var duplicate = room.join(RoomFixture.GUEST_1, "참가자1", false, requestId);
 
         assertThat(first).hasSize(1);
         assertThat(duplicate).isEmpty();
@@ -97,14 +103,49 @@ class RoomTest {
     }
 
     @Test
+    void sameRequestIdFromDifferentActorsDoesNotSuppressEitherCommand() {
+        var room = RoomFixture.emptyRoom();
+        var sharedRequestId = "00000000-0000-0000-0000-000000000901";
+
+        var first = room.join(RoomFixture.GUEST_1, "참가자1", false, sharedRequestId);
+        var second = room.join(RoomFixture.GUEST_2, "참가자2", false, sharedRequestId);
+
+        assertThat(first).hasSize(1);
+        assertThat(second).hasSize(1);
+        assertThat(room.snapshot().participants()).hasSize(3);
+    }
+
+    @Test
+    void sameActorCanReuseRequestIdForADifferentCommandType() {
+        var room = RoomFixture.emptyRoom();
+        var sharedRequestId = "00000000-0000-0000-0000-000000000902";
+
+        room.changeReady(RoomFixture.HOST, true, sharedRequestId);
+        var settings = room.updateSettings(RoomFixture.HOST, room.snapshot().settings(), sharedRequestId);
+
+        assertThat(settings).hasSize(1);
+        assertThat(room.snapshot().sequence()).isEqualTo(2);
+    }
+
+    @Test
+    void rejectsNonUuidRequestIds() {
+        var room = RoomFixture.emptyRoom();
+
+        assertThatThrownBy(() -> room.changeReady(RoomFixture.HOST, true, "not-a-uuid"))
+            .isInstanceOf(RoomRuleViolation.class)
+            .hasMessageContaining("ROOM_REQUEST_ID_INVALID");
+    }
+
+    @Test
     void failedAuthorizationDoesNotConsumeTheRequestId() {
         var room = RoomFixture.roomWithFourParticipants();
         var next = room.snapshot().settings();
 
-        assertThatThrownBy(() -> room.updateSettings(RoomFixture.GUEST_1, next, "req-settings"))
+        var requestId = RoomFixture.requestId("failed-authorization");
+        assertThatThrownBy(() -> room.updateSettings(RoomFixture.GUEST_1, next, requestId))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_HOST_REQUIRED");
-        assertThatThrownBy(() -> room.updateSettings(RoomFixture.GUEST_1, next, "req-settings"))
+        assertThatThrownBy(() -> room.updateSettings(RoomFixture.GUEST_1, next, requestId))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_HOST_REQUIRED");
     }
@@ -120,14 +161,15 @@ class RoomTest {
             RoomFixture.HOST,
             "방장"
         );
-        room.join(RoomFixture.GUEST_1, "참가자1", false, "req-join-1");
+        room.join(RoomFixture.GUEST_1, "참가자1", false, RoomFixture.requestId("retry-seat-join"));
 
-        assertThatThrownBy(() -> room.join(RoomFixture.GUEST_2, "참가자2", false, "req-retry-join"))
+        var retryRequestId = RoomFixture.requestId("retry-capacity");
+        assertThatThrownBy(() -> room.join(RoomFixture.GUEST_2, "참가자2", false, retryRequestId))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_FULL");
-        room.leave(RoomFixture.GUEST_1, "req-leave");
+        room.leave(RoomFixture.GUEST_1, RoomFixture.requestId("retry-seat-leave"));
 
-        assertThat(room.join(RoomFixture.GUEST_2, "참가자2", false, "req-retry-join")).hasSize(1);
+        assertThat(room.join(RoomFixture.GUEST_2, "참가자2", false, retryRequestId)).hasSize(1);
         assertThat(room.snapshot().participants())
             .extracting(Participant::actorId)
             .contains(RoomFixture.GUEST_2);
@@ -137,20 +179,20 @@ class RoomTest {
     void transferredHostImmediatelyOwnsManagementAuthority() {
         var room = RoomFixture.roomWithFourParticipants();
 
-        room.transferHost(RoomFixture.HOST, RoomFixture.GUEST_1, "req-transfer");
+        room.transferHost(RoomFixture.HOST, RoomFixture.GUEST_1, RoomFixture.requestId("transfer"));
 
         assertThat(room.snapshot().hostId()).isEqualTo(RoomFixture.GUEST_1);
         assertThatThrownBy(() -> room.updateSettings(
             RoomFixture.HOST,
             room.snapshot().settings(),
-            "req-old-host-settings"
+            RoomFixture.requestId("old-host-settings")
         ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_HOST_REQUIRED");
         assertThat(room.updateSettings(
             RoomFixture.GUEST_1,
             room.snapshot().settings(),
-            "req-new-host-settings"
+            RoomFixture.requestId("new-host-settings")
         )).hasSize(1);
     }
 
@@ -158,7 +200,7 @@ class RoomTest {
     void hostLeaveTransfersAuthorityToTheOldestActiveParticipant() {
         var room = RoomFixture.roomWithFourParticipants();
 
-        var events = room.leave(RoomFixture.HOST, "req-leave");
+        var events = room.leave(RoomFixture.HOST, RoomFixture.requestId("host-leave"));
 
         assertThat(room.snapshot().hostId()).isEqualTo(RoomFixture.GUEST_1);
         assertThat(events).containsExactly(
@@ -171,7 +213,7 @@ class RoomTest {
     void lastParticipantLeaveClosesTheRoom() {
         var room = RoomFixture.emptyRoom();
 
-        var events = room.leave(RoomFixture.HOST, "req-leave");
+        var events = room.leave(RoomFixture.HOST, RoomFixture.requestId("last-leave"));
 
         assertThat(room.snapshot().status()).isEqualTo(RoomStatus.CLOSED);
         assertThat(events).containsExactly(
@@ -191,11 +233,15 @@ class RoomTest {
             RoomFixture.HOST,
             "방장"
         );
-        room.join(RoomFixture.GUEST_1, "참가자1", false, "req-active");
-        room.join(RoomFixture.GUEST_2, "관전자", true, "req-spectator");
+        room.join(RoomFixture.GUEST_1, "참가자1", false, RoomFixture.requestId("active"));
+        room.join(RoomFixture.GUEST_2, "관전자", true, RoomFixture.requestId("spectator"));
 
         assertThat(room.snapshot().participants()).hasSize(3);
-        assertThatThrownBy(() -> room.changeReady(RoomFixture.GUEST_2, true, "req-ready"))
+        assertThatThrownBy(() -> room.changeReady(
+            RoomFixture.GUEST_2,
+            true,
+            RoomFixture.requestId("spectator-ready")
+        ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_SPECTATOR_CANNOT_READY");
     }
@@ -204,7 +250,11 @@ class RoomTest {
     void rejectsUnknownParticipantCommands() {
         var room = RoomFixture.emptyRoom();
 
-        assertThatThrownBy(() -> room.changeReady(new ActorId("unknown"), true, "req-ready"))
+        assertThatThrownBy(() -> room.changeReady(
+            new ActorId("unknown"),
+            true,
+            RoomFixture.requestId("unknown-ready")
+        ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_PARTICIPANT_NOT_FOUND");
     }

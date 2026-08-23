@@ -88,7 +88,7 @@ class InMemoryActiveRoomRepositoryTest {
                         maximumSimultaneousCallbacks.accumulateAndGet(active, Math::max);
                         Thread.yield();
                         simultaneousCallbacks.decrementAndGet();
-                        return null;
+                        return java.util.List.of();
                     });
                     return null;
                 });
@@ -111,7 +111,11 @@ class InMemoryActiveRoomRepositoryTest {
 
         try (var executor = Executors.newFixedThreadPool(2)) {
             var change = executor.submit(() -> repository.withRoom(RoomFixture.ROOM_ID, room -> {
-                var events = room.changeReady(RoomFixture.HOST, true, "req-ready");
+                var events = room.changeReady(
+                    RoomFixture.HOST,
+                    true,
+                    RoomFixture.requestId("repository-ready")
+                );
                 changed.countDown();
                 try {
                     if (!releaseChange.await(5, TimeUnit.SECONDS)) {
