@@ -9,6 +9,10 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+app:
+  session:
+    secret: ${APP_SESSION_SECRET:local-development-session-key-at-least-32-bytes}
+    cookie-secure: ${APP_SESSION_SECURE:false}
 server:
   port: ${PORT:8080}
   forward-headers-strategy: framework
