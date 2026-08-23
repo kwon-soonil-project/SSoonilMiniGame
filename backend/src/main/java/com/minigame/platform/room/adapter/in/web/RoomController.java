@@ -36,14 +36,16 @@ public class RoomController {
     @PostMapping
     ResponseEntity<RoomSnapshotResponse> create(
             @AuthenticationPrincipal ActorPrincipal actor,
-            @Valid @RequestBody CreateRoomRequest request
+            @Valid @RequestBody CreateRoomRequest request,
+            HttpServletRequest servletRequest
     ) {
         var view = rooms.create(
                 actor,
                 request.title(),
                 request.visibility(),
                 request.password(),
-                request.gameType()
+                request.gameType(),
+                commandId(servletRequest)
         );
         return ResponseEntity.status(HttpStatus.CREATED).body(RoomWebDtos.from(view));
     }

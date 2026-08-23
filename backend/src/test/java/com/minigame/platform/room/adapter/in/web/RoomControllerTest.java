@@ -6,9 +6,11 @@ import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.application.ActiveRoomRepository;
+import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.RoomApplicationService;
 import com.minigame.platform.shared.config.SecurityConfig;
 import com.minigame.platform.shared.error.GlobalExceptionHandler;
+import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import java.time.Duration;
@@ -38,6 +41,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 )
 @Import({
         SecurityConfig.class,
+        ChatPolicy.class,
         RoomApplicationService.class,
         InMemoryActiveRoomRepository.class,
         GlobalExceptionHandler.class
@@ -54,6 +58,9 @@ class RoomControllerTest {
 
     @Autowired
     SessionTokenService tokenService;
+
+    @MockitoBean
+    RoomEventPublisher eventPublisher;
 
     @BeforeEach
     void clearRooms() {
@@ -230,6 +237,7 @@ class RoomControllerTest {
 )
 @Import({
         SecurityConfig.class,
+        ChatPolicy.class,
         RoomApplicationService.class,
         InMemoryActiveRoomRepository.class,
         GlobalExceptionHandler.class
@@ -246,6 +254,9 @@ class RoomControllerSecurityTest {
 
     @Autowired
     SessionTokenService tokenService;
+
+    @MockitoBean
+    RoomEventPublisher eventPublisher;
 
     @Test
     void rejectsAuthenticatedMutationWithoutCsrfTokenUsingApiErrorEnvelope() throws Exception {

@@ -13,6 +13,8 @@ app:
   session:
     secret: ${APP_SESSION_SECRET}
     cookie-secure: ${APP_SESSION_SECURE:false}
+  websocket:
+    allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:8080,http://localhost:5173}
 server:
   port: ${PORT:8080}
   forward-headers-strategy: framework

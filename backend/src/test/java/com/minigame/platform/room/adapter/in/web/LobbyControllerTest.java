@@ -5,6 +5,7 @@ import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.auth.application.SessionTokenService;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.application.ActiveRoomRepository;
+import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.RoomApplicationService;
 import com.minigame.platform.room.domain.GameType;
 import com.minigame.platform.room.domain.Room;
@@ -13,6 +14,7 @@ import com.minigame.platform.room.domain.RoomSettings;
 import com.minigame.platform.room.domain.Visibility;
 import com.minigame.platform.shared.error.GlobalExceptionHandler;
 import com.minigame.platform.shared.config.SecurityConfig;
+import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.time.Duration;
 
@@ -34,6 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 )
 @Import({
         SecurityConfig.class,
+        ChatPolicy.class,
         RoomApplicationService.class,
         InMemoryActiveRoomRepository.class,
         GlobalExceptionHandler.class
@@ -49,6 +53,9 @@ class LobbyControllerTest {
 
     @Autowired
     SessionTokenService tokenService;
+
+    @MockitoBean
+    RoomEventPublisher eventPublisher;
 
     @BeforeEach
     void setUpRooms() {

@@ -165,6 +165,16 @@ public final class Room {
         return complete(request, events);
     }
 
+    public List<RoomEvent> acceptChat(ActorId actorId, String requestId) {
+        var request = processedRequest(actorId, CommandType.CHAT_SEND, requestId);
+        if (processedRequests.contains(request)) {
+            return List.of();
+        }
+        requireOpen();
+        requireParticipant(actorId);
+        return complete(request, List.of(new RoomEvent.ChatAccepted(nextSequence())));
+    }
+
     public Snapshot snapshot() {
         return new Snapshot(
             id,
@@ -252,6 +262,7 @@ public final class Room {
         CHANGE_READY,
         UPDATE_SETTINGS,
         TRANSFER_HOST,
-        LEAVE
+        LEAVE,
+        CHAT_SEND
     }
 }

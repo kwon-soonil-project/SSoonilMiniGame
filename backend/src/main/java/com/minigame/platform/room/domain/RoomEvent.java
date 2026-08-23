@@ -22,4 +22,7 @@ public sealed interface RoomEvent {
 
     record RoomClosed(long sequence) implements RoomEvent {
     }
+
+    record ChatAccepted(long sequence) implements RoomEvent {
+    }
 }
