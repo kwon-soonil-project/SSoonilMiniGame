@@ -23,7 +23,13 @@ const gameLabels = {
     <dl>
       <div><dt>방장</dt><dd>{{ room.hostNickname }}</dd></div>
       <div><dt>인원</dt><dd>{{ room.participantCount }} / {{ room.maxParticipants }}명</dd></div>
-      <div><dt>입장</dt><dd>{{ room.passwordProtected ? '🔒 비밀번호 필요' : '🔓 바로 입장' }}</dd></div>
+      <div data-password-state>
+        <dt>입장</dt>
+        <dd>
+          <span aria-hidden="true">{{ room.passwordProtected ? '🔒' : '🔓' }}</span>
+          {{ room.passwordProtected ? '비밀번호 필요' : '바로 입장' }}
+        </dd>
+      </div>
     </dl>
     <p v-if="room.status === 'PLAYING'" class="spectator-note">관전한 뒤 다음 라운드부터 참여해요.</p>
     <a class="join-link" :href="`/rooms/${room.code}`">
@@ -49,5 +55,5 @@ dd { margin: 0; font-weight: 650; text-align: right; }
 .spectator-note { color: #8a5a10; font-size: .8rem; line-height: 1.45; }
 .join-link { display: flex; justify-content: space-between; margin-top: auto; padding-top: 1.1rem; color: #4f3ac7; font-size: .88rem; font-weight: 800; text-decoration: none; }
 .join-link:focus-visible { outline: 3px solid #ad9fff; outline-offset: 4px; }
-@media (max-width: 767px) { .room-card { display: grid; grid-template-columns: 1fr auto; gap: .4rem 1rem; padding: 1rem; } .card-topline, h2, dl, .spectator-note { grid-column: 1; } h2 { margin: .35rem 0; } dl { grid-template-columns: repeat(2, max-content); gap: .25rem 1rem; } dl div { gap: .35rem; } dl div:last-child { display: none; } .join-link { grid-column: 2; grid-row: 1 / span 3; align-self: center; padding: .7rem; background: #f0edff; border-radius: .75rem; } .join-link span { display: none; } }
+@media (max-width: 767px) { .room-card { display: grid; grid-template-columns: 1fr auto; gap: .4rem 1rem; padding: 1rem; } .card-topline, h2, dl, .spectator-note { grid-column: 1; } h2 { margin: .35rem 0; } dl { grid-template-columns: repeat(2, max-content); gap: .25rem 1rem; } dl div { gap: .35rem; } dl [data-password-state] { grid-column: 1 / -1; } .join-link { grid-column: 2; grid-row: 1 / span 3; align-self: center; padding: .7rem; background: #f0edff; border-radius: .75rem; } .join-link span { display: none; } }
 </style>

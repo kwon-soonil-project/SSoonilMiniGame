@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { restoreFocus, trapDialogFocus } from '../../shared/ui/dialogFocus'
 import { useAuthStore } from './authStore'
 
 const auth = useAuthStore()
@@ -8,9 +9,12 @@ const router = useRouter()
 const guestDialogOpen = ref(false)
 const nickname = ref('')
 const nicknameInput = ref<HTMLInputElement | null>(null)
+const guestDialog = ref<HTMLElement | null>(null)
+const guestOpener = ref<HTMLElement | null>(null)
 const localError = ref<string | null>(null)
 
-async function openGuestDialog(): Promise<void> {
+async function openGuestDialog(event: MouseEvent): Promise<void> {
+  guestOpener.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   guestDialogOpen.value = true
   localError.value = null
   await nextTick()
@@ -18,7 +22,22 @@ async function openGuestDialog(): Promise<void> {
 }
 
 function closeGuestDialog(): void {
-  if (!auth.loading) guestDialogOpen.value = false
+  if (auth.loading) return
+  guestDialogOpen.value = false
+  void nextTick().then(() => { restoreFocus(guestOpener.value) })
+}
+
+function containGuestFocus(event: KeyboardEvent): void {
+  trapDialogFocus(event, guestDialog.value)
+}
+
+async function retryAuthentication(): Promise<void> {
+  try {
+    await auth.retryInitialize()
+    if (auth.actor) await router.push('/lobby')
+  } catch {
+    // The store exposes the stable message beside this control.
+  }
 }
 
 async function submitGuest(): Promise<void> {
@@ -45,6 +64,10 @@ async function submitGuest(): Promise<void> {
         <a class="google" href="/oauth2/authorization/google" rel="nofollow">Google로 계속</a>
       </div>
       <p class="entry-note">가입 없이 닉네임만으로 참가할 수 있어요.</p>
+      <p v-if="auth.error" class="auth-error" data-auth-error role="alert">
+        {{ auth.error }}
+        <button data-action="retry-auth" type="button" :disabled="auth.loading" @click="retryAuthentication">다시 시도</button>
+      </p>
     </div>
 
     <div class="game-preview" aria-label="1차 제공 게임">
@@ -56,11 +79,13 @@ async function submitGuest(): Promise<void> {
 
     <div
       v-if="guestDialogOpen"
+      ref="guestDialog"
       class="dialog-backdrop"
       role="dialog"
       aria-modal="true"
       aria-labelledby="guest-dialog-title"
       @keydown.esc="closeGuestDialog"
+      @keydown="containGuestFocus"
       @click.self="closeGuestDialog"
     >
       <form class="dialog-card" @submit.prevent="submitGuest">
@@ -99,6 +124,7 @@ h1 span { color: #6652d9; }
 .primary { background: #5b47d6; color: white; box-shadow: 0 10px 24px rgb(91 71 214 / 22%); }
 .google { background: white; border: 1px solid #d9dbe5; color: #242735; }
 .entry-note, .field-help { color: #777b8c; font-size: .85rem; }
+.auth-error { display: flex; align-items: center; gap: .7rem; color: #b42318; font-size: .88rem; }.auth-error button { border: 0; background: transparent; color: #513bc8; cursor: pointer; font-weight: 800; text-decoration: underline; }
 .game-preview { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; transform: rotate(2deg); }
 .game-preview article { aspect-ratio: 1.25; background: white; border: 1px solid #ecebf6; border-radius: 1.4rem; box-shadow: 0 18px 45px rgb(31 25 75 / 10%); display: grid; place-content: center; gap: .8rem; text-align: center; }
 .game-preview article:nth-child(even) { transform: translateY(2rem); }

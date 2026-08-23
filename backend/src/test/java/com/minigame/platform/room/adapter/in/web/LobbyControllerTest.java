@@ -73,6 +73,7 @@ class LobbyControllerTest {
                 .andExpect(jsonPath("$[0].roomId").isString())
                 .andExpect(jsonPath("$[0].code").isString())
                 .andExpect(jsonPath("$[0].participantCount").value(1))
+                .andExpect(jsonPath("$[0].sequence").value(0))
                 .andExpect(jsonPath("$[0].hostNickname").value("방장감자"))
                 .andExpect(jsonPath("$[0].passwordProtected").value(false))
                 .andExpect(jsonPath("$[0].password").doesNotExist())

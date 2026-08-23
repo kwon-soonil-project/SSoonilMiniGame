@@ -15,6 +15,7 @@ export function createAppRouter(pinia: Pinia) {
 
   router.beforeEach(async (to) => {
     const auth = useAuthStore(pinia)
+    if (to.name === 'home' && auth.error && !auth.initialized) return true
     try {
       await auth.initialize()
     } catch {

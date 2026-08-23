@@ -38,6 +38,11 @@ export class RealtimeClient {
   private readonly handlers = new Map<string, Set<RealtimeMessageHandler>>()
   private readonly brokerSubscriptions = new Map<string, SubscriptionPort>()
   private connecting: Promise<void> | null = null
+  private readonly waiters: Array<{
+    client: StompClientPort
+    resolve: () => void
+    reject: (cause: Error) => void
+  }> = []
   private readonly state = ref<ConnectionState>('disconnected')
   readonly connectionState: DeepReadonly<Ref<ConnectionState>> = readonly(this.state)
 
@@ -68,41 +73,92 @@ export class RealtimeClient {
     if (this.state.value === 'connected') return Promise.resolve()
     if (this.connecting) return this.connecting
     this.state.value = 'connecting'
-    const client = this.factory()
-    this.client = client
-    this.connecting = new Promise<void>((resolve, reject) => {
-      client.onConnect = () => {
-        this.state.value = 'connected'
-        this.connecting = null
-        for (const destination of this.handlers.keys()) this.installSubscription(destination)
-        resolve()
-      }
-      client.onStompError = () => {
-        this.state.value = 'failed'
-        this.connecting = null
-        reject(new Error('실시간 연결을 설정하지 못했습니다.'))
-      }
-      client.onWebSocketClose = () => {
-        this.brokerSubscriptions.clear()
-        this.state.value = client.active ? 'reconnecting' : 'disconnected'
-      }
-      client.activate()
-    })
-    return this.connecting
+    const attempt = this.connectCurrentOrReplacement()
+    this.connecting = attempt
+    void attempt.then(
+      () => { if (this.connecting === attempt) this.connecting = null },
+      () => { if (this.connecting === attempt) this.connecting = null },
+    )
+    return attempt
   }
 
   async disconnect(): Promise<void> {
     const client = this.client
     this.client = null
     this.connecting = null
+    this.rejectWaiters(client, new Error('실시간 연결을 종료했습니다.'))
     this.brokerSubscriptions.clear()
     if (client?.active) await client.deactivate()
     this.state.value = 'disconnected'
   }
 
-  private installSubscription(destination: string): void {
-    if (!this.client || this.brokerSubscriptions.has(destination)) return
-    const subscription = this.client.subscribe(destination, (message: Pick<IMessage, 'body'>) => {
+  private async connectCurrentOrReplacement(): Promise<void> {
+    let client = this.client
+    if (client?.active) {
+      this.state.value = 'reconnecting'
+      return this.waitForConnection(client)
+    }
+    if (client) {
+      await client.deactivate()
+      if (this.client !== client) return this.connectCurrentOrReplacement()
+      this.client = null
+      this.brokerSubscriptions.clear()
+    }
+    client = this.factory()
+    this.client = client
+    this.configureCallbacks(client)
+    const connected = this.waitForConnection(client)
+    client.activate()
+    return connected
+  }
+
+  private configureCallbacks(client: StompClientPort): void {
+    client.onConnect = () => {
+      if (this.client !== client) return
+      this.state.value = 'connected'
+      for (const destination of this.handlers.keys()) this.installSubscription(destination, client)
+      this.resolveWaiters(client)
+    }
+    client.onStompError = () => {
+      if (this.client !== client) return
+      this.state.value = 'failed'
+      this.rejectWaiters(client, new Error('실시간 연결을 설정하지 못했습니다.'))
+    }
+    client.onWebSocketClose = () => {
+      if (this.client !== client) return
+      this.brokerSubscriptions.clear()
+      this.state.value = client.active ? 'reconnecting' : 'disconnected'
+    }
+  }
+
+  private waitForConnection(client: StompClientPort): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.waiters.push({ client, resolve, reject })
+    })
+  }
+
+  private resolveWaiters(client: StompClientPort): void {
+    for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = this.waiters[index]!
+      if (waiter.client !== client) continue
+      this.waiters.splice(index, 1)
+      waiter.resolve()
+    }
+  }
+
+  private rejectWaiters(client: StompClientPort | null, cause: Error): void {
+    if (!client) return
+    for (let index = this.waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = this.waiters[index]!
+      if (waiter.client !== client) continue
+      this.waiters.splice(index, 1)
+      waiter.reject(cause)
+    }
+  }
+
+  private installSubscription(destination: string, client: StompClientPort = this.client!): void {
+    if (this.client !== client || this.brokerSubscriptions.has(destination)) return
+    const subscription = client.subscribe(destination, (message: Pick<IMessage, 'body'>) => {
       let payload: unknown
       try {
         payload = JSON.parse(message.body) as unknown

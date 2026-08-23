@@ -26,6 +26,15 @@ function enterByCode(): void {
   window.location.assign(`/rooms/${normalized}`)
 }
 
+function openCreateDialog(): void {
+  createDialogOpen.value = true
+}
+
+function closeCreateDialog(): void {
+  createDialogOpen.value = false
+  window.setTimeout(() => { document.getElementById('create-room-button')?.focus() }, 0)
+}
+
 function moveToCreatedRoom(room: CreatedRoom): void {
   createDialogOpen.value = false
   window.location.assign(`/rooms/${room.code}`)
@@ -48,7 +57,7 @@ function moveToCreatedRoom(room: CreatedRoom): void {
           <h1 id="lobby-title">오늘은 어떤 게임을<br><span>함께 해볼까요?</span></h1>
           <p>입장 가능한 방을 찾거나 친구들을 위한 새 방을 만들어 보세요.</p>
         </div>
-        <button class="create-button" data-action="create-room" type="button" @click="createDialogOpen = true">
+        <button id="create-room-button" class="create-button" data-action="create-room" type="button" @click="openCreateDialog">
           <span aria-hidden="true">+</span> 방 만들기
         </button>
       </section>
@@ -109,7 +118,7 @@ function moveToCreatedRoom(room: CreatedRoom): void {
       </section>
     </main>
 
-    <CreateRoomDialog :open="createDialogOpen" @close="createDialogOpen = false" @created="moveToCreatedRoom" />
+    <CreateRoomDialog :open="createDialogOpen" @close="closeCreateDialog" @created="moveToCreatedRoom" />
   </div>
 </template>
 

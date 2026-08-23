@@ -52,4 +52,139 @@ describe('RealtimeClient', () => {
 
     expect(subscriptions).toEqual(['/topic/rooms/room-1'])
   })
+
+  it('reuses the active client while the broker reconnects after a socket close', async () => {
+    let factoryCalls = 0
+    let activations = 0
+    const client: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() {
+        activations += 1
+        this.active = true
+        this.onConnect({})
+      },
+      deactivate: vi.fn(async () => undefined),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const realtime = new RealtimeClient(() => {
+      factoryCalls += 1
+      return client
+    })
+    await realtime.connect()
+
+    client.onWebSocketClose({})
+    const reconnecting = realtime.connect()
+    client.onConnect({})
+    await reconnecting
+
+    expect(factoryCalls).toBe(1)
+    expect(activations).toBe(1)
+    expect(realtime.connectionState.value).toBe('connected')
+  })
+
+  it('reuses an active client after a STOMP error instead of activating a duplicate', async () => {
+    let factoryCalls = 0
+    let activations = 0
+    const client: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() {
+        activations += 1
+        this.active = true
+        if (activations === 1) this.onStompError({})
+      },
+      deactivate: vi.fn(async () => undefined),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const realtime = new RealtimeClient(() => {
+      factoryCalls += 1
+      return client
+    })
+    await expect(realtime.connect()).rejects.toThrow('실시간 연결')
+
+    const reconnecting = realtime.connect()
+    client.onConnect({})
+    await reconnecting
+
+    expect(factoryCalls).toBe(1)
+    expect(activations).toBe(1)
+  })
+
+  it('deactivates an inactive failed client before activating its replacement', async () => {
+    const lifecycle: string[] = []
+    const first: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() {
+        lifecycle.push('activate-first')
+        this.active = false
+        this.onStompError({})
+      },
+      deactivate: vi.fn(async () => { lifecycle.push('deactivate-first') }),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const second: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() {
+        lifecycle.push('activate-second')
+        this.active = true
+        this.onConnect({})
+      },
+      deactivate: vi.fn(async () => undefined),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const clients = [first, second]
+    const realtime = new RealtimeClient(() => clients.shift()!)
+    await expect(realtime.connect()).rejects.toThrow()
+    await realtime.connect()
+
+    expect(lifecycle).toEqual(['activate-first', 'deactivate-first', 'activate-second'])
+  })
+
+  it('ignores callbacks from a replaced client', async () => {
+    const secondSubscriptions: string[] = []
+    const first: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() { this.onStompError({}) },
+      deactivate: vi.fn(async () => undefined),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const second: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() { this.active = true },
+      deactivate: vi.fn(async () => undefined),
+      subscribe(destination) {
+        secondSubscriptions.push(destination)
+        return { unsubscribe: vi.fn() }
+      },
+    }
+    const clients = [first, second]
+    const realtime = new RealtimeClient(() => clients.shift()!)
+    realtime.subscribeLobby(() => undefined)
+    await expect(realtime.connect()).rejects.toThrow()
+    const replacement = realtime.connect()
+    await vi.waitFor(() => expect(second.active).toBe(true))
+
+    first.onConnect({})
+    expect(secondSubscriptions).toEqual([])
+    second.onConnect({})
+    await replacement
+    expect(secondSubscriptions).toEqual(['/topic/lobby'])
+  })
 })

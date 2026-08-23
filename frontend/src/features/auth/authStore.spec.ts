@@ -44,4 +44,28 @@ describe('authStore', () => {
     expect(store.actor).toBeNull()
     expect(store.error).toBeNull()
   })
+
+  it('can explicitly recover after a transient current-user failure', async () => {
+    let requests = 0
+    server.use(http.get('/api/v1/me', () => {
+      requests += 1
+      if (requests === 1) return HttpResponse.json(
+        { code: 'HTTP_ERROR', message: '일시적인 오류입니다.', requestId: 'request-500' },
+        { status: 500 },
+      )
+      return HttpResponse.json({
+        actorId: 'member-1', actorType: 'MEMBER', nickname: '회원감자', memberId: 'member-id-1',
+      })
+    }))
+    const store = useAuthStore()
+
+    await expect(store.initialize()).rejects.toThrow('일시적인 오류')
+    expect(store.initialized).toBe(false)
+    expect(store.error).toBe('일시적인 오류입니다.')
+
+    await store.retryInitialize()
+    expect(store.initialized).toBe(true)
+    expect(store.actor?.nickname).toBe('회원감자')
+    expect(requests).toBe(2)
+  })
 })

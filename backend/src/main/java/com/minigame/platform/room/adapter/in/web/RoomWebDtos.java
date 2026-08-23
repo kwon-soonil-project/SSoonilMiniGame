@@ -64,7 +64,8 @@ public final class RoomWebDtos {
             boolean passwordProtected,
             int participantCount,
             int maxParticipants,
-            String hostNickname
+            String hostNickname,
+            long sequence
     ) {
     }
 
@@ -99,7 +100,8 @@ public final class RoomWebDtos {
                 view.passwordProtected(),
                 view.participantCount(),
                 view.maxParticipants(),
-                view.hostNickname()
+                view.hostNickname(),
+                view.sequence()
         );
     }
 

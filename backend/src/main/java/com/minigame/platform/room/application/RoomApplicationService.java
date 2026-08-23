@@ -404,7 +404,8 @@ public class RoomApplicationService {
                 passwordHashes.containsKey(room.id()),
                 activeParticipantCount(room),
                 room.settings().maxParticipants(),
-                hostNickname
+                hostNickname,
+                room.sequence()
         );
     }
 
@@ -589,7 +590,8 @@ public class RoomApplicationService {
             boolean passwordProtected,
             int participantCount,
             int maxParticipants,
-            String hostNickname
+            String hostNickname,
+            long sequence
     ) {
     }
 

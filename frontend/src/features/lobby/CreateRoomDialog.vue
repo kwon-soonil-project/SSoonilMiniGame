@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
+import { trapDialogFocus } from '../../shared/ui/dialogFocus'
 import { useLobbyStore, type CreatedRoom, type GameType } from './lobbyStore'
 
 const props = defineProps<{ open: boolean }>()
@@ -15,16 +16,32 @@ const password = ref('')
 const gameType = ref<GameType>('LIAR')
 const error = ref<string | null>(null)
 const titleInput = ref<HTMLInputElement | null>(null)
+const dialog = ref<HTMLElement | null>(null)
 
 watch(() => props.open, async (open) => {
-  if (!open) return
+  if (!open) {
+    clearSensitiveFields()
+    return
+  }
   error.value = null
   await nextTick()
   titleInput.value?.focus()
 })
 
 function close(): void {
-  if (!lobby.creating) emit('close')
+  if (lobby.creating) return
+  clearSensitiveFields()
+  emit('close')
+}
+
+function clearSensitiveFields(): void {
+  password.value = ''
+  passwordEnabled.value = false
+  error.value = null
+}
+
+function containFocus(event: KeyboardEvent): void {
+  trapDialogFocus(event, dialog.value)
 }
 
 async function submit(): Promise<void> {
@@ -46,6 +63,7 @@ async function submit(): Promise<void> {
       ...(passwordEnabled.value ? { password: normalizedPassword } : {}),
       gameType: gameType.value,
     })
+    clearSensitiveFields()
     emit('created', created)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '방을 만들지 못했습니다.'
@@ -56,11 +74,13 @@ async function submit(): Promise<void> {
 <template>
   <div
     v-if="open"
+    ref="dialog"
     class="dialog-backdrop"
     role="dialog"
     aria-modal="true"
     aria-labelledby="create-room-title"
-    @keydown.esc="close"
+    @keydown.esc.prevent.stop="close"
+    @keydown="containFocus"
     @click.self="close"
   >
     <form class="dialog-card" @submit.prevent="submit">

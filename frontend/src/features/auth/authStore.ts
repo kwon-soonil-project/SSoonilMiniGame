@@ -15,24 +15,39 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  let initialization: Promise<void> | null = null
 
-  async function initialize(): Promise<void> {
-    if (initialized.value) return
+  function initialize(): Promise<void> {
+    if (initialized.value) return Promise.resolve()
+    if (initialization) return initialization
+    initialization = initializeOnce().finally(() => {
+      initialization = null
+    })
+    return initialization
+  }
+
+  async function initializeOnce(): Promise<void> {
     loading.value = true
     error.value = null
     try {
       actor.value = await apiRequest<Actor>('/api/v1/me')
+      initialized.value = true
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
         actor.value = null
+        initialized.value = true
       } else {
         error.value = cause instanceof Error ? cause.message : '로그인 상태를 확인하지 못했습니다.'
         throw cause
       }
     } finally {
-      initialized.value = true
       loading.value = false
     }
+  }
+
+  async function retryInitialize(): Promise<void> {
+    error.value = null
+    await initialize()
   }
 
   async function joinAsGuest(rawNickname: string): Promise<Actor> {
@@ -62,5 +77,5 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  return { actor, initialized, loading, error, initialize, joinAsGuest }
+  return { actor, initialized, loading, error, initialize, retryInitialize, joinAsGuest }
 })
