@@ -103,6 +103,12 @@ function moveToCreatedRoom(room: CreatedRoom): void {
           <button class="filter-submit" type="submit">검색</button>
         </form>
 
+        <p v-if="lobby.realtimeWarning" class="state-message warning" data-realtime-warning role="status" aria-live="polite">
+          {{ lobby.realtimeWarning }}
+          <button data-action="retry-realtime" type="button" :disabled="lobby.realtimeStatus === 'connecting'" @click="lobby.retryRealtime">
+            {{ lobby.realtimeStatus === 'connecting' ? '연결 중…' : '실시간 다시 연결' }}
+          </button>
+        </p>
         <p v-if="lobby.error" class="state-message error" role="alert">
           {{ lobby.error }} <button type="button" @click="lobby.loadRooms">다시 시도</button>
         </p>
@@ -135,7 +141,7 @@ main { width: min(calc(100% - 2.5rem), 1160px); margin: auto; padding: 3.5rem 0 
 .quick-entry { display: flex; align-items: center; justify-content: space-between; gap: 2rem; margin: 3rem 0 4rem; border-radius: 1.25rem; padding: 1.4rem 1.6rem; background: #27243d; color: white; }.quick-entry h2 { margin: 0 0 .3rem; font-size: 1rem; }.quick-entry p { margin: 0; color: #b9b7c8; font-size: .83rem; }.quick-entry form { display: grid; grid-template-columns: minmax(10rem, 15rem) auto; }.quick-entry input { border: 0; border-radius: .75rem 0 0 .75rem; font: inherit; padding: .8rem; }.quick-entry button { border: 0; border-radius: 0 .75rem .75rem 0; background: #7662e7; color: white; cursor: pointer; font-weight: 800; padding: 0 1.1rem; }.quick-entry form p { grid-column: 1 / -1; margin-top: .4rem; color: #ffb4ab; }
 .section-title { display: flex; justify-content: space-between; align-items: end; margin-bottom: 1.2rem; }.section-title h2 { margin: .3rem 0 0; font-size: 1.7rem; }.room-count { color: #747888; font-size: .85rem; }
 .filters { display: grid; grid-template-columns: minmax(12rem, 1fr) 11rem auto auto; gap: .7rem; margin-bottom: 1.4rem; }.filters input[type="search"], .filters select { box-sizing: border-box; width: 100%; border: 1px solid #dcdde6; border-radius: .75rem; background: white; font: inherit; padding: .75rem; }.available-filter { display: flex; align-items: center; gap: .4rem; padding: 0 .4rem; font-size: .85rem; font-weight: 700; }.filter-submit { border: 0; border-radius: .75rem; background: #eae7ff; color: #4f3ac7; cursor: pointer; font-weight: 800; padding: 0 1rem; }
-.room-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }.state-message, .empty-state { border: 1px dashed #d7d5e5; border-radius: 1rem; padding: 3rem; text-align: center; color: #6d7181; }.state-message.error { color: #9b2c24; }.state-message button { border: 0; background: transparent; color: #533ec7; font-weight: 800; text-decoration: underline; }.empty-state span { font-size: 2rem; }.empty-state h3 { color: #343746; }
+.room-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }.state-message, .empty-state { border: 1px dashed #d7d5e5; border-radius: 1rem; padding: 3rem; text-align: center; color: #6d7181; }.state-message.error { color: #9b2c24; }.state-message.warning { margin-bottom: 1rem; border-color: #d8c96a; color: #665813; }.state-message button { border: 0; background: transparent; color: #533ec7; cursor: pointer; font-weight: 800; text-decoration: underline; }.state-message button:disabled { cursor: wait; opacity: .65; }.empty-state span { font-size: 2rem; }.empty-state h3 { color: #343746; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #ad9fff; outline-offset: 2px; }
 @media (max-width: 900px) { .room-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.filters { grid-template-columns: 1fr 10rem; }.available-filter, .filter-submit { min-height: 2.7rem; } }

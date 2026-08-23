@@ -4,6 +4,7 @@ import { apiRequest } from '../../shared/api/apiClient'
 import { realtimeClient, type RealtimeClient } from '../../shared/realtime/realtimeClient'
 
 type LobbyRealtimePort = Pick<RealtimeClient, 'subscribeLobby' | 'connect'>
+export type LobbyRealtimeStatus = 'idle' | 'connecting' | 'connected' | 'failed'
 
 export type GameType = 'LIAR' | 'DRAWING' | 'CHOSUNG' | 'MAJORITY'
 
@@ -62,11 +63,15 @@ export const useLobbyStore = defineStore('lobby', () => {
   const loading = ref(false)
   const creating = ref(false)
   const error = ref<string | null>(null)
+  const realtimeStatus = ref<LobbyRealtimeStatus>('idle')
+  const realtimeWarning = ref<string | null>(null)
   const lastSequences = new Map<string, number>()
   const bufferedEvents: LobbyEvent[] = []
   let unsubscribeLobby: (() => void) | null = null
   let synchronizing = false
   let refreshPromise: Promise<void> | null = null
+  let activeRealtimeClient: LobbyRealtimePort | null = null
+  let realtimeConnectPromise: Promise<void> | null = null
 
   async function loadRooms(): Promise<void> {
     loading.value = true
@@ -150,15 +155,12 @@ export const useLobbyStore = defineStore('lobby', () => {
 
   async function initialize(client: LobbyRealtimePort = realtimeClient): Promise<void> {
     if (unsubscribeLobby) return
+    activeRealtimeClient = client
     synchronizing = true
     unsubscribeLobby = client.subscribeLobby(event => {
       void applyLobbyEvent(event)
     })
-    try {
-      await client.connect()
-    } catch {
-      error.value = '실시간 연결이 끊겼어요. 목록을 새로고침해 주세요.'
-    }
+    await connectRealtime(client)
     try {
       await loadRooms()
     } catch {
@@ -172,9 +174,34 @@ export const useLobbyStore = defineStore('lobby', () => {
   function dispose(): void {
     unsubscribeLobby?.()
     unsubscribeLobby = null
+    activeRealtimeClient = null
   }
 
-  return { rooms, filters, loading, creating, error, loadRooms, createRoom, applyLobbyEvent, initialize, dispose }
+  async function retryRealtime(): Promise<void> {
+    if (!activeRealtimeClient) return
+    await connectRealtime(activeRealtimeClient)
+  }
+
+  return {
+    rooms, filters, loading, creating, error, realtimeStatus, realtimeWarning,
+    loadRooms, createRoom, applyLobbyEvent, initialize, retryRealtime, dispose,
+  }
+
+  async function connectRealtime(client: LobbyRealtimePort): Promise<void> {
+    if (realtimeConnectPromise) return realtimeConnectPromise
+    realtimeStatus.value = 'connecting'
+    realtimeConnectPromise = client.connect().then(
+      () => {
+        realtimeStatus.value = 'connected'
+        realtimeWarning.value = null
+      },
+      () => {
+        realtimeStatus.value = 'failed'
+        realtimeWarning.value = '실시간 업데이트가 비활성화되었어요. 방 목록은 계속 이용할 수 있습니다.'
+      },
+    ).finally(() => { realtimeConnectPromise = null })
+    return realtimeConnectPromise
+  }
 
   async function refreshAuthoritativeSnapshot(): Promise<void> {
     if (refreshPromise) return refreshPromise

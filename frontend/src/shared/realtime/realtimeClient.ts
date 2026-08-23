@@ -37,7 +37,9 @@ export class RealtimeClient {
   private client: StompClientPort | null = null
   private readonly handlers = new Map<string, Set<RealtimeMessageHandler>>()
   private readonly brokerSubscriptions = new Map<string, SubscriptionPort>()
+  private readonly deactivations = new Map<StompClientPort, Promise<unknown>>()
   private connecting: Promise<void> | null = null
+  private generation = 0
   private readonly waiters: Array<{
     client: StompClientPort
     resolve: () => void
@@ -72,8 +74,9 @@ export class RealtimeClient {
   connect(): Promise<void> {
     if (this.state.value === 'connected') return Promise.resolve()
     if (this.connecting) return this.connecting
+    const generation = ++this.generation
     this.state.value = 'connecting'
-    const attempt = this.connectCurrentOrReplacement()
+    const attempt = this.connectCurrentOrReplacement(generation)
     this.connecting = attempt
     void attempt.then(
       () => { if (this.connecting === attempt) this.connecting = null },
@@ -83,33 +86,61 @@ export class RealtimeClient {
   }
 
   async disconnect(): Promise<void> {
+    const generation = ++this.generation
     const client = this.client
     this.client = null
     this.connecting = null
-    this.rejectWaiters(client, new Error('실시간 연결을 종료했습니다.'))
+    this.rejectAllWaiters(new Error('실시간 연결을 종료했습니다.'))
     this.brokerSubscriptions.clear()
-    if (client?.active) await client.deactivate()
-    this.state.value = 'disconnected'
+    try {
+      if (client) await this.deactivateClient(client)
+    } finally {
+      if (this.generation === generation) this.state.value = 'disconnected'
+    }
   }
 
-  private async connectCurrentOrReplacement(): Promise<void> {
+  private async connectCurrentOrReplacement(generation: number): Promise<void> {
+    this.assertCurrentGeneration(generation)
     let client = this.client
     if (client?.active) {
       this.state.value = 'reconnecting'
       return this.waitForConnection(client)
     }
     if (client) {
-      await client.deactivate()
-      if (this.client !== client) return this.connectCurrentOrReplacement()
+      await this.deactivateClient(client)
+      this.assertCurrentGeneration(generation)
+      if (this.client !== client) return this.connectCurrentOrReplacement(generation)
       this.client = null
       this.brokerSubscriptions.clear()
     }
+    this.assertCurrentGeneration(generation)
     client = this.factory()
     this.client = client
     this.configureCallbacks(client)
     const connected = this.waitForConnection(client)
     client.activate()
     return connected
+  }
+
+  private assertCurrentGeneration(generation: number): void {
+    if (this.generation !== generation) throw new Error('실시간 연결을 종료했습니다.')
+  }
+
+  private deactivateClient(client: StompClientPort): Promise<unknown> {
+    const pending = this.deactivations.get(client)
+    if (pending) return pending
+    const deactivation = Promise.resolve().then(() => client.deactivate()).then(
+      result => {
+        if (this.deactivations.get(client) === deactivation) this.deactivations.delete(client)
+        return result
+      },
+      cause => {
+        if (this.deactivations.get(client) === deactivation) this.deactivations.delete(client)
+        throw cause
+      },
+    )
+    this.deactivations.set(client, deactivation)
+    return deactivation
   }
 
   private configureCallbacks(client: StompClientPort): void {
@@ -154,6 +185,10 @@ export class RealtimeClient {
       this.waiters.splice(index, 1)
       waiter.reject(cause)
     }
+  }
+
+  private rejectAllWaiters(cause: Error): void {
+    for (const waiter of this.waiters.splice(0)) waiter.reject(cause)
   }
 
   private installSubscription(destination: string, client: StompClientPort = this.client!): void {

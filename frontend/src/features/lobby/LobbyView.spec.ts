@@ -90,4 +90,20 @@ describe('LobbyView', () => {
     expect((wrapper.get('#room-password-enabled').element as HTMLInputElement).checked).toBe(false)
     expect(wrapper.find('#room-password').exists()).toBe(false)
   })
+
+  it('shows a persistent realtime warning with an independent retry action', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const store = useLobbyStore()
+    store.initialize = vi.fn(async () => undefined)
+    store.realtimeStatus = 'failed'
+    store.realtimeWarning = '실시간 업데이트가 비활성화되었어요.'
+    store.retryRealtime = vi.fn(async () => undefined)
+    const wrapper = mount(LobbyView, { global: { plugins: [pinia] } })
+
+    expect(wrapper.get('[data-realtime-warning]').attributes('role')).toBe('status')
+    expect(wrapper.get('[data-realtime-warning]').text()).toContain('실시간 업데이트가 비활성화')
+    await wrapper.get('button[data-action="retry-realtime"]').trigger('click')
+    expect(store.retryRealtime).toHaveBeenCalledOnce()
+  })
 })

@@ -187,4 +187,62 @@ describe('RealtimeClient', () => {
     await replacement
     expect(secondSubscriptions).toEqual(['/topic/lobby'])
   })
+
+  it('cancels a pending replacement when disconnect waits for inactive deactivation', async () => {
+    let releaseDeactivation!: () => void
+    const deactivation = new Promise<void>((resolve) => { releaseDeactivation = resolve })
+    let factoryCalls = 0
+    let activations = 0
+    const first: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() {
+        activations += 1
+        this.onStompError({})
+      },
+      deactivate: vi.fn(() => deactivation),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const second: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() {
+        activations += 1
+        this.active = true
+        this.onConnect({})
+      },
+      deactivate: vi.fn(async () => undefined),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+    }
+    const clients = [first, second]
+    const realtime = new RealtimeClient(() => {
+      factoryCalls += 1
+      return clients.shift()!
+    })
+    await expect(realtime.connect()).rejects.toThrow('실시간 연결')
+
+    const pendingReplacement = realtime.connect()
+    await vi.waitFor(() => expect(first.deactivate).toHaveBeenCalled())
+    const disconnecting = realtime.disconnect()
+    let disconnectSettled = false
+    void disconnecting.then(() => { disconnectSettled = true })
+    await Promise.resolve()
+    expect(disconnectSettled).toBe(false)
+    releaseDeactivation()
+
+    await disconnecting
+    await expect(pendingReplacement).rejects.toThrow('종료')
+    expect(realtime.connectionState.value).toBe('disconnected')
+    expect(factoryCalls).toBe(1)
+    expect(activations).toBe(1)
+
+    await realtime.connect()
+    expect(factoryCalls).toBe(2)
+    expect(activations).toBe(2)
+    expect(realtime.connectionState.value).toBe('connected')
+  })
 })

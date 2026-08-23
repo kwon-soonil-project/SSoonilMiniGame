@@ -61,6 +61,45 @@ describe('lobbyStore', () => {
     expect(store.error).toBe('잠시 후 다시 시도해 주세요.')
   })
 
+  it('keeps a realtime warning separate when REST initialization succeeds', async () => {
+    server.use(http.get('/api/v1/lobby/rooms', () => HttpResponse.json([waitingRoom])))
+    const store = useLobbyStore()
+
+    await store.initialize({
+      subscribeLobby: () => () => undefined,
+      connect: async () => { throw new Error('broker unavailable') },
+    })
+
+    expect(store.rooms).toEqual([waitingRoom])
+    expect(store.error).toBeNull()
+    expect(store.realtimeStatus).toBe('failed')
+    expect(store.realtimeWarning).toContain('실시간')
+  })
+
+  it('retries realtime independently without reloading the successful REST snapshot', async () => {
+    let roomRequests = 0
+    let connectAttempts = 0
+    server.use(http.get('/api/v1/lobby/rooms', () => {
+      roomRequests += 1
+      return HttpResponse.json([waitingRoom])
+    }))
+    const store = useLobbyStore()
+    await store.initialize({
+      subscribeLobby: () => () => undefined,
+      connect: async () => {
+        connectAttempts += 1
+        if (connectAttempts === 1) throw new Error('broker unavailable')
+      },
+    })
+
+    await store.retryRealtime()
+
+    expect(connectAttempts).toBe(2)
+    expect(roomRequests).toBe(1)
+    expect(store.realtimeStatus).toBe('connected')
+    expect(store.realtimeWarning).toBeNull()
+  })
+
   it('creates a room without exposing password material in client state', async () => {
     server.use(
       http.get('/api/v1/csrf', () => HttpResponse.json({
