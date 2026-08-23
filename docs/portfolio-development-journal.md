@@ -335,27 +335,26 @@ HTTP 5xx 급증, 서버 준비 상태 실패, Cloud SQL 연결 실패, WebSocket
 
 ### CI/CD와 배포 파이프라인
 
-GitHub Actions를 사용해 테스트 환경 자동 검증 후 운영을 수동 승인하는 파이프라인을 구축한다. 최초에 GitHub 브랜치 보호와 Actions 워크플로, Google Cloud 리소스, Workload Identity Federation, Secret Manager, Google OAuth 콜백을 설정한 이후에는 운영 승인과 예외 판단을 제외한 과정을 자동화한다.
+GitHub Actions를 사용해 테스트 환경 자동 검증 후 운영을 사람이 명시적으로 시작하는 파이프라인을 구축한다. 현재 저장소는 GitHub Free 비공개 저장소라 `production` 환경 Required reviewer를 사용할 수 없다. 따라서 1차 운영 게이트는 `main` 브랜치에서만 가능한 `workflow_dispatch` 수동 실행으로 구현한다. 이는 실행 권한이 있는 사용자의 의도하지 않은 자동 배포를 막지만, 별도 검토자의 승인과는 다르다. 저장소를 공개하거나 지원 플랜으로 전환하면 Required reviewer를 추가한다.
 
 Pull Request가 생성되거나 갱신되면 백엔드 단위 테스트, Testcontainers PostgreSQL 통합 테스트, 프론트엔드 단위 테스트와 타입 검사, Vue 프로덕션 빌드, 정적 분석, Docker 이미지 빌드 검증을 실행한다. 필수 검사가 실패하면 `main` 병합을 차단한다.
 
-`main` 병합 이후 배포 순서는 다음과 같다.
+1차 구현의 배포 순서는 다음과 같다.
 
-1. Vue와 Spring Boot가 포함된 단일 OCI 이미지를 한 번 빌드하고 Git 커밋 SHA로 태그한다.
-2. 이미지를 Artifact Registry에 업로드한다.
-3. 같은 Cloud SQL 인스턴스의 별도 DB·계정을 사용하는 테스트 환경에서 Flyway Cloud Run Job을 실행한다.
-4. 테스트 Cloud Run 서비스에 이미지를 배포하고 스모크 테스트와 Playwright 다중 사용자 E2E를 실행한다.
-5. 모든 검사가 성공하면 GitHub `production` 환경의 수동 승인을 기다린다.
-6. 승인 후 운영 드레인 모드로 새 방과 새 게임 시작을 차단하고 활성 게임이 0개가 될 때까지 제한된 시간 동안 기다린다.
-7. 운영 Flyway Cloud Run Job을 실행한다. 실패하면 현재 리비전에 트래픽을 유지한다.
-8. 동일한 이미지를 트래픽이 없는 새 Cloud Run 리비전으로 배포하고 리비전 전용 주소에서 스모크 테스트한다.
-9. 성공하면 새 리비전으로 트래픽을 전환하고 실패하면 이전 리비전을 유지한다.
+1. Pull Request에서는 모든 단위·통합·프론트·컨테이너 E2E 검사를 수행하고 배포하지 않는다.
+2. `main` 푸시는 같은 검사를 다시 통과한 OCI 이미지를 만들고 archive SHA-256과 Docker image ID를 기록한다.
+3. 검증 archive를 로드해 Artifact Registry의 공통 이미지 경로에 커밋 SHA 태그로 푸시하고, push 결과의 manifest digest를 얻는다.
+4. 태그가 아니라 불변 `image@sha256:...` 참조로 `minigame-preview`를 자동 배포하고 readiness를 확인한다.
+5. 운영은 `main`을 선택한 `Run workflow` 실행에서만 시작한다. 모든 검사와 프리뷰 배포를 다시 통과해야 한다.
+6. 운영 job은 프리뷰가 출력한 digest와 운영 push digest가 같은지 확인한 뒤 같은 불변 이미지를 `minigame`에 배포하고 readiness를 확인한다.
+
+프리뷰 배포는 이전 실행을 취소해 최신 커밋이 남도록 하고, 운영 배포는 취소 없이 한 번에 하나씩 직렬화한다. 추후 실제 이용자가 생기기 전에 Required reviewer, 운영 드레인, 별도 Flyway Cloud Run Job, 무트래픽 리비전 스모크 테스트와 점진적 트래픽 전환을 추가한다.
 
 테스트 Cloud Run은 최소 인스턴스를 0으로 설정한다. 테스트와 운영 데이터베이스는 같은 Cloud SQL 인스턴스 안에서 DB와 사용자를 분리해 비용을 줄인다. 이 구조는 인스턴스 장애의 영향 범위를 공유한다는 제약을 수용하며, 서비스 규모가 커지면 테스트용 인스턴스를 분리한다.
 
 GitHub Actions는 장기 서비스 계정 JSON 키 대신 GitHub OIDC와 Google Cloud Workload Identity Federation으로 단기 배포 권한을 받는다. DB 비밀번호, Google OAuth Client Secret, 세션 서명 키 등은 Secret Manager에서 관리하고 GitHub 저장소에는 넣지 않는다.
 
-Flyway 변경은 이전과 새 애플리케이션이 함께 동작할 수 있는 확장-전환-제거 방식으로 작성한다. DB 마이그레이션은 자동 롤백하지 않으며, 애플리케이션 장애 시 Cloud Run 트래픽을 직전 리비전으로 되돌린다. 운영 승인 후의 자동 드레인은 최대 대기시간을 넘으면 중단하고 사람의 판단을 요청한다.
+Flyway 변경은 이전과 새 애플리케이션이 함께 동작할 수 있는 확장-전환-제거 방식으로 작성한다. DB 마이그레이션은 자동 롤백하지 않으며, 애플리케이션 장애 시 Cloud Run 트래픽을 직전 리비전으로 되돌린다. 향후 운영 수동 실행 뒤 자동 드레인을 도입할 때는 최대 대기시간을 넘으면 중단하고 사람의 판단을 요청한다.
 
 ## 6. 클라우드 선택 과정
 
@@ -500,6 +499,14 @@ AWS로 이전할 경우 동일한 애플리케이션 이미지를 ECS/Fargate에
 | ADR-106 | 2026-08-23 | 게스트 생성과 방 비밀번호 검증에 메모리 토큰 버킷 요청 제한 적용 | 공개 서비스의 세션 대량 생성과 Argon2 비용을 이용한 자원 고갈을 줄이기 위해 | 구현 완료 |
 | ADR-107 | 2026-08-23 | 공유 상태 도입 전 Cloud Run `max-instances=1`을 배포 필수 조건으로 설정 | 방 상태·연결 유예·요청 제한이 단일 프로세스 메모리에 있으므로 인스턴스 간 우회를 막기 위해 | 확정 |
 | ADR-108 | 2026-08-23 | Vue 애플리케이션 TypeScript를 5.9.3으로 고정 | `vue-tsc` 3.3.11이 TypeScript 7에서 제거된 `typescript/lib/tsc` export를 아직 사용하므로 타입 검사를 안정화하기 위해 | 호환성 결정 |
+| ADR-109 | 2026-08-23 | Cloud Run 서비스를 요청 기반 과금으로 배포 | 유휴 시간에는 인스턴스를 0개로 축소해 초기 운영비를 최소화하면서 WebSocket 사용 시간만 과금하기 위해 | 확정 |
+| ADR-110 | 2026-08-23 | 미니게임 전용 Google Cloud 프로젝트 `ssoonil-minigame-20260823` 사용 | 기존 `sos-project-445302`의 리소스·권한·비용과 미니게임 서비스를 분리해 관리하기 위해 | 생성 완료 |
+| ADR-111 | 2026-08-23 | 최초 PostgreSQL은 Cloud SQL 30일 무료 체험 인스턴스로 구성 | 개발 초기 실제 관리형 DB 연결을 검증하면서 첫 30일의 인스턴스 비용을 줄이기 위해 | 생성 완료 |
+| ADR-112 | 2026-08-23 | Cloud Run에서 Cloud SQL Java Connector `1.29.0`으로 PostgreSQL에 연결 | 장기 인증서나 IP 허용 목록 대신 런타임 서비스 계정의 단기 자격 증명과 암호화된 연결을 사용하기 위해 | 구현 완료 |
+| ADR-113 | 2026-08-23 | POSIX 실행 파일의 Git 줄바꿈을 LF로 고정 | Windows 체크아웃의 CRLF 때문에 Linux 컨테이너가 `gradlew` shebang을 실행하지 못하는 재현 오류를 방지하기 위해 | 구현 완료 |
+| ADR-114 | 2026-08-23 | GitHub Free 비공개 저장소의 운영 게이트를 `main` 전용 `workflow_dispatch`로 구현 | Required reviewer를 사용할 수 없는 현재 플랜에서도 운영 자동 배포를 막고 명시적인 사람의 실행을 요구하기 위해 | 구현 완료 |
+| ADR-115 | 2026-08-23 | 환경 승격 시 mutable 태그 대신 동일한 OCI manifest digest를 사용 | 같은 커밋 태그가 다시 가리켜져도 프리뷰에서 확인한 정확한 바이트를 운영에 배포하기 위해 | 구현 완료 |
+| ADR-116 | 2026-08-23 | Cloud SQL Java Connector 갱신 전략을 `lazy`로 설정 | 요청 기반 CPU throttling 환경에서 백그라운드 인증서 갱신이 멈추는 문제를 피하기 위해 | 구현 완료 |
 
 ### 공통 플랫폼 최종 보강 계약
 
@@ -530,6 +537,96 @@ AWS로 이전할 경우 동일한 애플리케이션 이미지를 ECS/Fargate에
 - `server.forward-headers-strategy=framework`와 정규화된 remote address는 Cloud Run의 신뢰 가능한 프록시 경계 뒤에서만 사용한다. 애플리케이션 컨테이너를 인터넷에 직접 노출하거나 임의의 전달 헤더를 신뢰하는 구성을 허용하지 않는다.
 - 두 번째 인스턴스를 허용하기 전 Redis 기반 활성 방 저장소, 분산 presence·grace 작업, 공유 요청 제한기를 함께 도입한다. 일부만 분산화한 상태에서 인스턴스 수를 늘리지 않는다.
 
+#### 요청 기반 과금 배포 설정
+
+- 운영 서비스는 Cloud Run 요청 기반 과금을 사용한다. 인스턴스 기반 과금과 최소 인스턴스 상시 실행은 사용하지 않는다.
+- 전용 Google Cloud 프로젝트는 `SSoonil MiniGame`, 변경 불가능한 프로젝트 ID는 `ssoonil-minigame-20260823`이다.
+- 배포 리전은 서울 `asia-northeast3`, 서비스 이름은 `minigame`, Artifact Registry 저장소 이름은 `minigame`으로 통일한다.
+- 컨테이너 자원은 초기값 `1 vCPU`, `512 MiB`, 동시 요청 `80`으로 설정한다.
+- `min-instances=0`, `max-instances=1`, CPU throttling 활성화로 유휴 비용과 메모리 상태 분산을 동시에 제한한다.
+- WebSocket 요청 제한시간은 Cloud Run 최대값인 3,600초로 설정하고 클라이언트 자동 재접속을 필수로 유지한다.
+- GitHub Actions는 검증된 커밋 SHA 이미지만 Artifact Registry에 올리고 같은 이미지 digest를 테스트와 운영에 승격한다.
+- Cloud SQL, Secret Manager, Artifact Registry처럼 무료 한도 밖의 서비스는 Google Cloud 예산 알림을 함께 설정한 뒤 생성한다.
+
+#### Cloud Run 요청 기반 배포 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 검증된 단일 OCI 이미지를 서울 리전 Cloud Run에 요청 기반 과금과 단일 인스턴스 상한으로 자동 배포한다.
+
+**Architecture:** 기존 PR 검증과 이미지 산출물 승격 흐름은 유지한다. GitHub OIDC로 단기 Google Cloud 자격을 얻고 Artifact Registry에 커밋 SHA 이미지를 푸시한 다음, 테스트 환경을 자동 배포한다. 운영은 GitHub Free 비공개 저장소 제약 때문에 `main` 전용 수동 workflow 실행으로 시작하고 프리뷰와 동일 digest를 배포한다.
+
+**Tech Stack:** GitHub Actions, Workload Identity Federation, Artifact Registry, Cloud Run, Cloud SQL for PostgreSQL, Secret Manager
+
+**Spec:** `docs/portfolio-development-journal.md`의 `CI/CD와 배포 파이프라인`, `Cloud Run 운영 전제`, `요청 기반 과금 배포 설정`
+
+**Global Constraints:**
+
+- Google Cloud 프로젝트는 전용으로 생성한 `ssoonil-minigame-20260823`을 사용하며 기존 `sos-project-445302`는 변경하지 않는다.
+- Cloud Run 리전은 `asia-northeast3`, 서비스 이름은 `minigame`, 최소 인스턴스는 `0`, 최대 인스턴스는 `1`이다.
+- 장기 서비스 계정 키를 만들지 않고 GitHub OIDC와 Workload Identity Federation만 사용한다.
+- 운영 비밀값을 저장소, GitHub 변수 또는 Actions 로그에 평문으로 기록하지 않는다.
+
+### Task 1: 요청 기반 배포 계약을 테스트로 고정
+
+**Files:**
+- Modify: `e2e/tests/delivery-contract.spec.ts`
+- Create: `.github/scripts/deploy-cloud-run.sh`
+
+**Interfaces:**
+- Consumes: CI가 만든 `minigame:${GITHUB_SHA}` 이미지와 Google Cloud 배포 환경변수
+- Produces: Artifact Registry SHA 태그와 요청 기반 Cloud Run 리비전
+
+- [x] **Step 1:** 배포 스크립트가 `--region=asia-northeast3`, `--min=0`, `--max=1`, `--cpu=1`, `--memory=512Mi`, `--concurrency=80`, `--timeout=3600`, `--cpu-throttling`을 전달하는 실패 테스트를 작성한다.
+- [x] **Step 2:** `cd e2e && npm test -- delivery-contract.spec.ts`를 실행해 Cloud Run 스크립트 부재로 실패하는지 확인한다.
+- [x] **Step 3:** 필수 환경변수를 검증하고 기존 검증 이미지를 Artifact Registry에 푸시한 뒤 위 플래그로 `gcloud run deploy`를 실행하는 `.github/scripts/deploy-cloud-run.sh`를 구현한다.
+- [x] **Step 4:** 같은 테스트를 다시 실행해 요청 기반·단일 인스턴스 계약이 통과하는지 확인한다.
+
+### Task 2: GitHub Actions 테스트·운영 승격 연결
+
+**Files:**
+- Modify: `.github/workflows/ci.yml`
+- Test: `e2e/tests/delivery-contract.spec.ts`
+
+**Interfaces:**
+- Consumes: `GCP_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_DEPLOY_SERVICE_ACCOUNT` GitHub 환경 변수와 검증 이미지 산출물
+- Produces: 테스트 자동 배포, `main` 전용 운영 수동 실행 후 동일 digest 배포
+
+- [x] **Step 1:** 현재 placeholder 단계가 실제 Google 인증·배포 단계를 요구하도록 워크플로 계약 테스트를 추가하고 실패를 확인한다.
+- [x] **Step 2:** preview job에 Google OIDC 인증, 검증 이미지 로드, Artifact Registry 푸시, 요청 기반 Cloud Run 배포, readiness 스모크 테스트를 연결한다.
+- [x] **Step 3:** production job은 `main` 전용 `workflow_dispatch`에서만 실행하고 preview가 출력한 manifest digest와 같은 이미지만 배포하도록 연결한다.
+- [x] **Step 4:** 프론트 단위 테스트, 백엔드 테스트, 컨테이너 E2E와 배포 계약 테스트 전체를 실행한다.
+
+### Task 3: Google Cloud 최초 리소스 구성과 배포 검증
+
+**Files:**
+- Modify: `docs/portfolio-development-journal.md`
+
+**Interfaces:**
+- Consumes: 결제가 연결된 승인 프로젝트와 GitHub 저장소 `kwon-soonil-project/SSoonilMiniGame`
+- Produces: Artifact Registry, Cloud SQL, Secret Manager 비밀, Workload Identity Federation, Cloud Run URL과 배포 회고
+
+- [x] **Step 1:** 프로젝트 소유자가 대상 프로젝트와 결제 연결을 확인한 뒤 Cloud Run, Artifact Registry, Cloud SQL Admin, Secret Manager API를 활성화한다.
+- [x] **Step 2:** 최소 권한 배포 서비스 계정과 GitHub 저장소 subject로 제한된 Workload Identity Federation provider를 만든다.
+- [x] **Step 3:** Artifact Registry `minigame`, Cloud SQL PostgreSQL 무료 체험 인스턴스, 애플리케이션 비밀값과 DB 계정을 만든다.
+- [ ] **Step 4:** GitHub 환경 변수를 설정하고 `main` 병합으로 프리뷰를 자동 배포한 뒤 `Run workflow`로 운영 배포를 시작한다.
+- [ ] **Step 5:** Cloud Run 서비스 세부정보에서 요청 기반 과금, 최소 0·최대 1, 서울 리전, 3,600초 timeout을 확인한다.
+- [ ] **Step 6:** readiness, 게스트 로그인, 방 생성, 두 브라우저 WebSocket 채팅을 운영 URL에서 검증하고 실제 비용·콜드 스타트·재접속 결과를 이 문서에 기록한다.
+
+#### 2026-08-23 Cloud Run 배포 구현 기록
+
+- 새 프로젝트 `ssoonil-minigame-20260823`(프로젝트 번호 `22353579802`)가 생성됐고 결제 계정 연결 및 현재 예상 요금 `₩0`을 콘솔에서 확인했다. 기존 프로젝트는 변경하지 않았다.
+- 검증 이미지를 Artifact Registry의 커밋 SHA 태그로 푸시하고 요청 기반 과금, `min=0`, `max=1`, `1 vCPU`, `512 MiB`, 동시 요청 `80`, timeout `3,600초`로 배포하는 스크립트를 추가했다.
+- Cloud SQL Java Connector를 런타임 이미지에 포함했고, DB 비밀번호·세션 서명 키·IP 해시 키는 GitHub가 값을 읽지 않고 Cloud Run이 Secret Manager 버전을 직접 참조하도록 했다.
+- 환경변수와 비밀은 `update` 방식으로 적용한다. 따라서 추후 Google OAuth Client ID와 Secret을 추가해도 기본 배포가 해당 설정을 삭제하지 않는다.
+- `main` 푸시는 검증된 이미지 산출물로 `minigame-preview`를 자동 배포한다. 운영은 `main` 전용 수동 workflow에서만 시작하며 프리뷰가 출력한 동일 manifest digest를 `minigame`으로 승격하고 두 단계 모두 readiness를 확인한다.
+- GitHub Free 비공개 저장소에는 Required reviewer가 제공되지 않아 현재 게이트는 별도 승인자가 아닌 수동 실행이다. 저장소 공개 또는 지원 플랜 전환 시 `production` Required reviewer를 추가한다.
+- 프리뷰 concurrency는 이전 실행을 취소하고, 운영 concurrency는 실행을 직렬화한다. Cloud SQL Connector는 CPU throttling 서버리스 환경에 권장되는 lazy refresh를 사용한다.
+- Windows 체크아웃에서 `backend/gradlew`가 CRLF로 변환되어 Linux 이미지 빌드가 실패하는 문제를 재현했다. `.gitattributes`와 계약 테스트로 POSIX 진입점의 LF를 고정한 뒤 동일 Docker 빌드가 성공했다.
+- 검증 결과: 백엔드 전체 테스트 성공, 프론트엔드 `11`개 파일 `67`개 테스트 및 프로덕션 빌드 성공, 배포 계약 `5`개 성공, 컨테이너 기반 두 브라우저 방·채팅 E2E `2`개 성공.
+- Cloud Run·Artifact Registry·Cloud SQL Admin·Secret Manager·IAM Credentials·STS API를 활성화했다. Artifact Registry `minigame`, Cloud SQL `minigame-db`, 세 비밀값, 런타임·배포 서비스 계정, 저장소 subject로 제한한 Workload Identity Federation provider를 구성했다. 장기 서비스 계정 키는 만들지 않았다.
+- 같은 Cloud SQL 인스턴스 안에 운영 `minigame`/`minigame_app`과 프리뷰 `minigame_preview`/`minigame_preview_app`을 분리하고 각 비밀번호를 별도 Secret Manager 비밀로 저장했다. 프리뷰 GitHub 환경 변수 전환은 GitHub 보안 재인증 뒤 완료한다.
+
 #### 도구 호환성 기록
 
 - 브라우저 애플리케이션은 Vue 3.5.41, `vue-tsc` 3.3.11, TypeScript 5.9.3 조합을 사용한다. 초기 계획의 TypeScript 7.0.2는 `vue-tsc`가 제거된 `typescript/lib/tsc` export를 참조해 타입 검사 단계에서 실행되지 않아 채택하지 않았다.
@@ -547,6 +644,8 @@ AWS로 이전할 경우 동일한 애플리케이션 이미지를 ECS/Fargate에
 - [Cloud Run WebSocket](https://docs.cloud.google.com/run/docs/triggering/websockets)
 - [Cloud Run 서울 리전](https://docs.cloud.google.com/run/docs/locations)
 - [Cloud SQL PostgreSQL 리전](https://docs.cloud.google.com/sql/docs/postgres/region-availability-overview)
+- [Cloud SQL PostgreSQL 무료 체험 인스턴스](https://docs.cloud.google.com/sql/docs/postgres/free-trial-instance)
+- [Cloud SQL Java Connector JDBC 설정](https://github.com/GoogleCloudPlatform/cloud-sql-jdbc-socket-factory/blob/main/docs/jdbc.md)
 - [Cloud Run 컨테이너 실행 규격](https://docs.cloud.google.com/run/docs/container-contract)
 - [Spring Boot 외부 설정](https://docs.spring.io/spring-boot/reference/features/external-config.html)
 - [PostgreSQL 백업과 이전](https://www.postgresql.org/docs/current/backup-dump.html)
