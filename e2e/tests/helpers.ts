@@ -28,7 +28,7 @@ export async function createPrivateRoom(page: Page, title: string, password: str
   await dialog.getByLabel('첫 게임').selectOption('LIAR')
   await dialog.getByLabel('공개 로비에 표시').uncheck()
   await dialog.getByLabel('비밀번호 사용').check()
-  await dialog.getByLabel('비밀번호').fill(password)
+  await dialog.getByRole('textbox', { name: '비밀번호', exact: true }).fill(password)
   await dialog.getByRole('button', { name: '방 만들기', exact: true }).click()
   await expect(page).toHaveURL(/\/rooms\/\d{6}$/)
   return page.url().split('/').at(-1) as string
