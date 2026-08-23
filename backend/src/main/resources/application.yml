@@ -1,0 +1,39 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/minigame}
+    username: ${DB_USER:minigame}
+    password: ${DB_PASSWORD:local-minigame}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+app:
+  session:
+    secret: ${APP_SESSION_SECRET}
+    cookie-secure: ${APP_SESSION_SECURE:false}
+  websocket:
+    allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:8080,http://localhost:5173}
+    disconnect-grace: ${APP_DISCONNECT_GRACE:PT30S}
+  abuse:
+    ip-hash-secret: ${APP_ABUSE_IP_HASH_SECRET:}
+    ip-hash-rotation: ${APP_ABUSE_IP_HASH_ROTATION:PT1H}
+    guest:
+      capacity: ${APP_GUEST_RATE_CAPACITY:12}
+      window: ${APP_GUEST_RATE_WINDOW:PT1M}
+    password:
+      capacity: ${APP_PASSWORD_RATE_CAPACITY:5}
+      window: ${APP_PASSWORD_RATE_WINDOW:PT1M}
+server:
+  port: ${PORT:8080}
+  forward-headers-strategy: framework
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics

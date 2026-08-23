@@ -1,0 +1,16 @@
+.git
+.github
+.worktrees
+.superpowers
+**/.gradle
+**/build
+**/node_modules
+**/.npm-cache
+**/dist
+**/playwright-report
+**/test-results
+.idea
+.vscode
+*.iml
+.env*
+gha-creds-*.json
