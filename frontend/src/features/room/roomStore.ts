@@ -138,6 +138,9 @@ const commandMessages: Record<string, string> = {
   ROOM_COMMAND_INVALID: '요청 내용을 확인해 주세요.',
 }
 
+const STALE_JOIN = Symbol('STALE_JOIN')
+const allowableMissingMembershipCodes = new Set(['ROOM_NOT_FOUND', 'ROOM_PARTICIPANT_NOT_FOUND'])
+
 export const useRoomStore = defineStore('room', () => {
   const snapshot = ref<RoomSnapshot | null>(null)
   const connection = ref<RoomConnection>('connecting')
@@ -155,40 +158,75 @@ export const useRoomStore = defineStore('room', () => {
   let joined = false
   let connectedOnce = false
   let recovery: { generation: number; roomId: string; controller: AbortController; promise: Promise<RoomSnapshot> } | null = null
-  let joinRequest: AbortController | null = null
+  let initialSnapshotRequest: AbortController | null = null
   let joinGeneration = 0
+  let membershipRoomId: string | null = null
+  let transitionTail: Promise<void> = Promise.resolve()
+  let pendingCleanup: { roomId: string; cause: Error; blockedThroughGeneration: number } | null = null
   let bufferedPublicEvents: RoomEvent[] = []
   let bufferedPrivateEvents: RoomEvent[] = []
   let unsubscribePublic: (() => void) | null = null
   let unsubscribePrivate: (() => void) | null = null
   let unsubscribeState: (() => void) | null = null
 
-  async function join(code: string, password = '', port: RoomRealtimePort = realtimeClient): Promise<void> {
+  function join(code: string, password = '', port: RoomRealtimePort = realtimeClient): Promise<void> {
     const generation = ++joinGeneration
-    joinRequest?.abort()
+    initialSnapshotRequest?.abort()
     recovery?.controller.abort()
     recovery = null
-    const controller = new AbortController()
-    joinRequest = controller
-    disposeSubscriptions()
-    snapshot.value = null
-    sequencer = null
-    joined = false
-    chats.value = []
-    unreadChatCount.value = 0
-    realtime = port
     loading.value = true
-    connection.value = 'connecting'
-    error.value = null
-    commandError.value = null
-    passwordRequired.value = false
-    connectedOnce = false
+    const operation = transitionTail.then(() => performJoin(code, password, port, generation))
+    transitionTail = operation.catch(() => undefined)
+    return operation
+  }
+
+  async function performJoin(
+    code: string,
+    password: string,
+    port: RoomRealtimePort,
+    generation: number,
+  ): Promise<void> {
+    let joinedRoomId: string | null = null
     try {
-      const joinedSnapshot = sanitizeSnapshot(await apiRequest<unknown>(`/api/v1/rooms/${code}/join`, {
-        method: 'POST', body: JSON.stringify({ password }), signal: controller.signal,
-      }))
+      if (pendingCleanup) {
+        if (generation <= pendingCleanup.blockedThroughGeneration) {
+          exposeCleanupFailure(pendingCleanup.cause)
+          throw pendingCleanup.cause
+        }
+        await cleanupMembership(pendingCleanup.roomId)
+        resetLocalRoomState()
+      }
       if (generation !== joinGeneration) return
-      const roomId = joinedSnapshot.roomId
+
+      const currentRoomId = membershipRoomId ?? snapshot.value?.roomId ?? null
+      if (currentRoomId && snapshot.value?.code === code && joined) {
+        loading.value = false
+        return
+      }
+      if (currentRoomId) {
+        await cleanupMembership(currentRoomId)
+        resetLocalRoomState()
+      }
+      if (generation !== joinGeneration) return
+
+      resetLocalRoomState()
+      realtime = port
+      connection.value = 'connecting'
+      error.value = null
+      commandError.value = null
+      passwordRequired.value = false
+      connectedOnce = false
+
+      // A join is an unsafe mutation. Never abort it: a delayed success must be
+      // observed so its server-side membership can be explicitly cleaned up.
+      const joinedSnapshot = sanitizeSnapshot(await apiRequest<unknown>(`/api/v1/rooms/${code}/join`, {
+        method: 'POST', body: JSON.stringify({ password }),
+      }))
+      joinedRoomId = joinedSnapshot.roomId
+      membershipRoomId = joinedRoomId
+      if (generation !== joinGeneration) throw STALE_JOIN
+
+      const roomId = joinedRoomId
       synchronizing = true
       bufferedPublicEvents = []
       bufferedPrivateEvents = []
@@ -196,9 +234,12 @@ export const useRoomStore = defineStore('room', () => {
       unsubscribePrivate = realtime.subscribe(`/user/queue/rooms/${roomId}`, payload => applyPrivateEvent(payload, generation))
       unsubscribeState = realtime.subscribeConnectionState(state => handleConnectionState(state, generation))
       await realtime.connect()
-      if (generation !== joinGeneration) return
+      if (generation !== joinGeneration) throw STALE_JOIN
+      const controller = new AbortController()
+      initialSnapshotRequest = controller
       const authoritative = await fetchSnapshot(roomId, controller.signal)
-      if (generation !== joinGeneration) return
+      if (initialSnapshotRequest === controller) initialSnapshotRequest = null
+      if (generation !== joinGeneration) throw STALE_JOIN
       replaceSnapshot(authoritative)
       sequencer = new EventSequencer(authoritative.sequence, () => reloadSnapshot(roomId, generation))
       synchronizing = false
@@ -209,7 +250,13 @@ export const useRoomStore = defineStore('room', () => {
       connectedOnce = true
       connection.value = 'connected'
     } catch (cause) {
-      if (generation !== joinGeneration) return
+      if (cause === STALE_JOIN || generation !== joinGeneration) {
+        disposeSubscriptions()
+        resetLocalRoomState()
+        if (joinedRoomId) await cleanupMembership(joinedRoomId)
+        return
+      }
+      if (pendingCleanup?.cause === cause) throw cause
       synchronizing = false
       connection.value = 'failed'
       passwordRequired.value = cause instanceof ApiError && cause.code === 'ROOM_PASSWORD_INVALID'
@@ -221,7 +268,6 @@ export const useRoomStore = defineStore('room', () => {
     } finally {
       if (generation === joinGeneration) {
         loading.value = false
-        if (joinRequest === controller) joinRequest = null
       }
     }
   }
@@ -418,11 +464,36 @@ export const useRoomStore = defineStore('room', () => {
   function updateSettings(settings: RoomSettings): void { publish('ROOM_SETTINGS_UPDATE', { ...settings }) }
 
   async function leave(): Promise<void> {
-    if (!snapshot.value) return
-    await apiRequest<void>(`/api/v1/rooms/${snapshot.value.roomId}/leave`, {
-      method: 'POST', headers: { 'X-Request-Id': crypto.randomUUID() },
-    })
+    const roomId = membershipRoomId ?? snapshot.value?.roomId
+    if (!roomId) return
+    await cleanupMembership(roomId)
     clearRoom()
+  }
+
+  async function cleanupMembership(roomId: string): Promise<void> {
+    try {
+      await apiRequest<void>(`/api/v1/rooms/${roomId}/leave`, {
+        method: 'POST', headers: { 'X-Request-Id': crypto.randomUUID() },
+      })
+    } catch (cause) {
+      if (!(cause instanceof ApiError && allowableMissingMembershipCodes.has(cause.code))) {
+        const stableCause = cause instanceof Error ? cause : new Error('이전 방을 정리하지 못했습니다.')
+        pendingCleanup = {
+          roomId,
+          cause: stableCause,
+          blockedThroughGeneration: joinGeneration,
+        }
+        exposeCleanupFailure(stableCause)
+        throw stableCause
+      }
+    }
+    if (membershipRoomId === roomId) membershipRoomId = null
+    if (pendingCleanup?.roomId === roomId) pendingCleanup = null
+  }
+
+  function exposeCleanupFailure(cause: Error): void {
+    connection.value = 'failed'
+    error.value = cause.message || '이전 방을 정리하지 못했습니다.'
   }
 
   function openChat(): void {
@@ -440,11 +511,11 @@ export const useRoomStore = defineStore('room', () => {
     unsubscribeState = null
   }
 
-  function clearRoom(): void {
-    joinGeneration += 1
-    joinRequest?.abort()
-    joinRequest = null
+  function resetLocalRoomState(): void {
+    initialSnapshotRequest?.abort()
+    initialSnapshotRequest = null
     recovery?.controller.abort()
+    recovery = null
     disposeSubscriptions()
     snapshot.value = null
     sequencer = null
@@ -452,7 +523,13 @@ export const useRoomStore = defineStore('room', () => {
     chats.value = []
     unreadChatCount.value = 0
     synchronizing = false
-    recovery = null
+    bufferedPublicEvents = []
+    bufferedPrivateEvents = []
+  }
+
+  function clearRoom(): void {
+    joinGeneration += 1
+    resetLocalRoomState()
   }
 
   return {

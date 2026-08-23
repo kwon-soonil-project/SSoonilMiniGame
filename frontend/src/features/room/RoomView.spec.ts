@@ -125,4 +125,16 @@ describe('RoomView', () => {
 
     expect(store.retryRecovery).toHaveBeenCalledOnce()
   })
+
+  it('offers an explicit room-transition retry when cleanup leaves the previous snapshot visible', async () => {
+    const { wrapper, store } = mountRoom()
+    await wrapper.setProps({ code: '654321' })
+    store.connection = 'failed'
+    store.error = '이전 방을 정리하지 못했습니다.'
+    await wrapper.vm.$nextTick()
+
+    await wrapper.get('[data-action="retry-room-transition"]').trigger('click')
+
+    expect(store.join).toHaveBeenNthCalledWith(2, '654321', '')
+  })
 })

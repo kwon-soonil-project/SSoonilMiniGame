@@ -18,6 +18,7 @@ const code = computed(() => props.code || window.location.pathname.split('/').fi
 const isHost = computed(() => room.snapshot?.hostId === auth.actor?.actorId)
 const me = computed(() => room.snapshot?.participants.find(participant => participant.actorId === auth.actor?.actorId))
 const canCommand = computed(() => room.connection === 'connected')
+const roomTransitionFailed = computed(() => room.connection === 'failed' && room.snapshot?.code !== code.value)
 const gameLabel = computed(() => ({ LIAR: '라이어 게임', DRAWING: '그림 퀴즈', CHOSUNG: '초성 퀴즈', MAJORITY: '다수결 예측' }[room.snapshot?.gameType ?? 'LIAR']))
 
 watch(code, nextCode => {
@@ -87,7 +88,8 @@ function handleMobileChatKeydown(event: KeyboardEvent): void {
 
       <p v-if="room.error" class="notice error" role="alert">
         {{ room.error }}
-        <button v-if="room.connection === 'failed'" data-action="retry-room-recovery" type="button" @click="room.retryRecovery()">방 상태 다시 동기화</button>
+        <button v-if="roomTransitionFailed" data-action="retry-room-transition" type="button" @click="enter(code, '')">방 이동 다시 시도</button>
+        <button v-else-if="room.connection === 'failed'" data-action="retry-room-recovery" type="button" @click="room.retryRecovery()">방 상태 다시 동기화</button>
       </p>
       <p v-if="room.commandError" class="notice error" role="alert">{{ room.commandError }}</p>
 

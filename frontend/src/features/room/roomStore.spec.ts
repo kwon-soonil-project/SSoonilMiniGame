@@ -277,23 +277,37 @@ describe('roomStore', () => {
     await vi.waitFor(() => expect(store.commandError).toContain('실시간'))
   })
 
-  it('lets the newest rapid room-code join win and removes subscriptions from the stale room', async () => {
+  it('waits for a server-applied stale join response, leaves that room, and only then joins the newest code', async () => {
     const firstRoom = { ...snapshot, roomId: '00000000-0000-0000-0000-000000000711', code: '111111', title: '느린 방' }
     const secondRoom = { ...snapshot, roomId: '00000000-0000-0000-0000-000000000722', code: '222222', title: '빠른 방' }
     let releaseFirst!: () => void
     const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
     let firstStarted = false
     let firstAborted = false
+    let secondStarted = false
+    let cleanupRequestId = ''
+    const lifecycle: string[] = []
     const fake = realtimeFake()
     server.use(
       http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
       http.post('/api/v1/rooms/111111/join', async ({ request }) => {
         firstStarted = true
+        lifecycle.push('first-applied')
         request.signal.addEventListener('abort', () => { firstAborted = true })
         await firstGate
+        lifecycle.push('first-response')
         return HttpResponse.json(firstRoom)
       }),
-      http.post('/api/v1/rooms/222222/join', () => HttpResponse.json(secondRoom)),
+      http.post(`/api/v1/rooms/${firstRoom.roomId}/leave`, ({ request }) => {
+        cleanupRequestId = request.headers.get('X-Request-Id') ?? ''
+        lifecycle.push('first-cleanup')
+        return new HttpResponse(null, { status: 204 })
+      }),
+      http.post('/api/v1/rooms/222222/join', () => {
+        secondStarted = true
+        lifecycle.push('second-join')
+        return HttpResponse.json(secondRoom)
+      }),
       http.get(`/api/v1/rooms/${firstRoom.roomId}/snapshot`, () => HttpResponse.json(firstRoom)),
       http.get(`/api/v1/rooms/${secondRoom.roomId}/snapshot`, () => HttpResponse.json(secondRoom)),
     )
@@ -302,14 +316,135 @@ describe('roomStore', () => {
     const first = store.join('111111', '', fake.realtime)
     await vi.waitFor(() => expect(firstStarted).toBe(true))
     const second = store.join('222222', '', fake.realtime)
-    await second
-    expect(firstAborted).toBe(true)
+    const firstAbortedBeforeRelease = firstAborted
+    const secondStartedBeforeRelease = secondStarted
     releaseFirst()
-    await first
+    await Promise.all([first, second])
 
+    expect(firstAbortedBeforeRelease).toBe(false)
+    expect(secondStartedBeforeRelease).toBe(false)
     expect(store.snapshot?.code).toBe('222222')
+    expect(lifecycle).toEqual(['first-applied', 'first-response', 'first-cleanup', 'second-join'])
+    expect(cleanupRequestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(fake.handlers.has(`/topic/rooms/${firstRoom.roomId}`)).toBe(false)
     expect(fake.handlers.has(`/topic/rooms/${secondRoom.roomId}`)).toBe(true)
+  })
+
+  it('keeps a failed current-room cleanup visible and blocks the next join until an explicit retry succeeds', async () => {
+    const nextRoom = { ...snapshot, roomId: '00000000-0000-0000-0000-000000000733', code: '333333', title: '다음 방' }
+    let cleanupAttempts = 0
+    let nextJoinAttempts = 0
+    const fake = realtimeFake()
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(snapshot)),
+      http.post(`/api/v1/rooms/${roomId}/leave`, () => {
+        cleanupAttempts += 1
+        if (cleanupAttempts === 1) return HttpResponse.json(
+          { code: 'HTTP_ERROR', message: '이전 방을 정리하지 못했습니다.', requestId: crypto.randomUUID() },
+          { status: 500 },
+        )
+        return new HttpResponse(null, { status: 204 })
+      }),
+      http.post('/api/v1/rooms/333333/join', () => {
+        nextJoinAttempts += 1
+        return HttpResponse.json(nextRoom)
+      }),
+      http.get(`/api/v1/rooms/${nextRoom.roomId}/snapshot`, () => HttpResponse.json(nextRoom)),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+
+    await expect(store.join('333333', '', fake.realtime)).rejects.toThrow('정리하지 못했습니다')
+
+    expect(store.snapshot?.code).toBe('123456')
+    expect(store.error).toContain('정리하지 못했습니다')
+    expect(nextJoinAttempts).toBe(0)
+
+    await store.join('333333', '', fake.realtime)
+
+    expect(cleanupAttempts).toBe(2)
+    expect(nextJoinAttempts).toBe(1)
+    expect(store.snapshot?.code).toBe('333333')
+  })
+
+  it('does not proceed with a queued join when stale-response cleanup fails, then retries explicitly', async () => {
+    const firstRoom = { ...snapshot, roomId: '00000000-0000-0000-0000-000000000755', code: '555555' }
+    const nextRoom = { ...snapshot, roomId: '00000000-0000-0000-0000-000000000766', code: '666666' }
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+    let firstStarted = false
+    let cleanupAttempts = 0
+    let nextJoinAttempts = 0
+    const fake = realtimeFake()
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/555555/join', async () => {
+        firstStarted = true
+        await firstGate
+        return HttpResponse.json(firstRoom)
+      }),
+      http.post(`/api/v1/rooms/${firstRoom.roomId}/leave`, () => {
+        cleanupAttempts += 1
+        if (cleanupAttempts === 1) return HttpResponse.json(
+          { code: 'HTTP_ERROR', message: '느린 입장 정리에 실패했습니다.', requestId: crypto.randomUUID() },
+          { status: 500 },
+        )
+        return new HttpResponse(null, { status: 204 })
+      }),
+      http.post('/api/v1/rooms/666666/join', () => {
+        nextJoinAttempts += 1
+        return HttpResponse.json(nextRoom)
+      }),
+      http.get(`/api/v1/rooms/${nextRoom.roomId}/snapshot`, () => HttpResponse.json(nextRoom)),
+    )
+    const store = useRoomStore()
+
+    const first = store.join('555555', '', fake.realtime)
+    await vi.waitFor(() => expect(firstStarted).toBe(true))
+    const queued = store.join('666666', '', fake.realtime)
+    releaseFirst()
+    const results = await Promise.allSettled([first, queued])
+
+    expect(results.map(result => result.status)).toEqual(['rejected', 'rejected'])
+    expect(cleanupAttempts).toBe(1)
+    expect(nextJoinAttempts).toBe(0)
+    expect(store.error).toContain('정리에 실패했습니다')
+
+    await store.join('666666', '', fake.realtime)
+
+    expect(cleanupAttempts).toBe(2)
+    expect(nextJoinAttempts).toBe(1)
+    expect(store.snapshot?.code).toBe('666666')
+  })
+
+  it('continues a room transition when cleanup confirms the actor is already absent', async () => {
+    const nextRoom = { ...snapshot, roomId: '00000000-0000-0000-0000-000000000744', code: '444444', title: '새 방' }
+    let nextJoinAttempts = 0
+    const fake = realtimeFake()
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(snapshot)),
+      http.post(`/api/v1/rooms/${roomId}/leave`, () => HttpResponse.json(
+        { code: 'ROOM_PARTICIPANT_NOT_FOUND', message: '이미 퇴장한 참가자입니다.', requestId: crypto.randomUUID() },
+        { status: 403 },
+      )),
+      http.post('/api/v1/rooms/444444/join', () => {
+        nextJoinAttempts += 1
+        return HttpResponse.json(nextRoom)
+      }),
+      http.get(`/api/v1/rooms/${nextRoom.roomId}/snapshot`, () => HttpResponse.json(nextRoom)),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+
+    await store.join('444444', '', fake.realtime)
+
+    expect(nextJoinAttempts).toBe(1)
+    expect(store.snapshot?.code).toBe('444444')
+    expect(store.error).toBeNull()
   })
 
   it('keeps password material out of room state and surfaces same-sequence private rejection', async () => {
@@ -353,6 +488,7 @@ describe('roomStore', () => {
       http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
       http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
       http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(snapshot)),
+      http.post(`/api/v1/rooms/${roomId}/leave`, () => new HttpResponse(null, { status: 204 })),
       http.post('/api/v1/rooms/654321/join', () => HttpResponse.json(
         { code: 'ROOM_PASSWORD_INVALID', message: '비밀번호가 올바르지 않습니다.', requestId: crypto.randomUUID() },
         { status: 400 },
