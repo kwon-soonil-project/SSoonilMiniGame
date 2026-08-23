@@ -130,7 +130,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      APP_ALLOWED_ORIGINS: ${{ vars.APP_ALLOWED_ORIGINS }}
+      APP_ALLOWED_ORIGINS: https://minigame-preview-22353579802.asia-northeast3.run.app
       APP_IMAGE: minigame:${{ github.sha }}
       APP_SESSION_SECRET_NAME: ${{ vars.APP_SESSION_SECRET_NAME }}
       CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
@@ -186,7 +186,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      APP_ALLOWED_ORIGINS: ${{ vars.APP_ALLOWED_ORIGINS }}
+      APP_ALLOWED_ORIGINS: https://minigame-22353579802.asia-northeast3.run.app
       APP_IMAGE: minigame:${{ github.sha }}
       APP_SESSION_SECRET_NAME: ${{ vars.APP_SESSION_SECRET_NAME }}
       CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}

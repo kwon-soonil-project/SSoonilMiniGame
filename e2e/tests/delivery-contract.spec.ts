@@ -215,6 +215,9 @@ test('main delivery deploys preview automatically and gates production behind a 
   expect(preview.if).toContain("github.event_name == 'workflow_dispatch'")
   expect(preview.if).toContain("github.ref == 'refs/heads/main'")
   expect(preview.concurrency).toEqual({ group: 'cloud-run-preview', 'cancel-in-progress': true })
+  expect(preview.env?.APP_ALLOWED_ORIGINS).toBe(
+    'https://minigame-preview-22353579802.asia-northeast3.run.app',
+  )
   expect(preview.env?.CLOUD_RUN_SERVICE).toBe('minigame-preview')
   expect(preview.env?.DB_NAME).toBe('minigame_preview')
   expect(preview.env?.DB_USER).toBe('minigame_preview_app')
@@ -223,6 +226,9 @@ test('main delivery deploys preview automatically and gates production behind a 
   expect(production.if).toContain("github.event_name == 'workflow_dispatch'")
   expect(production.if).toContain("github.ref == 'refs/heads/main'")
   expect(production.concurrency).toEqual({ group: 'cloud-run-production', 'cancel-in-progress': false })
+  expect(production.env?.APP_ALLOWED_ORIGINS).toBe(
+    'https://minigame-22353579802.asia-northeast3.run.app',
+  )
   expect(production.env?.CLOUD_RUN_SERVICE).toBe('minigame')
   expect(production.env?.DB_NAME).toBe('${{ vars.DB_NAME }}')
   expect(production.env?.DB_USER).toBe('${{ vars.DB_USER }}')
