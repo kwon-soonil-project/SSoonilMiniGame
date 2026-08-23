@@ -44,6 +44,8 @@ jobs:
     name: container-and-two-browser-e2e
     needs: verify
     runs-on: ubuntu-latest
+    env:
+      APP_IMAGE: minigame:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,9 +54,12 @@ jobs:
           cache: npm
           cache-dependency-path: e2e/package-lock.json
       - name: Build immutable application image
-        run: docker build --tag minigame:${{ github.sha }} .
+        run: docker build --tag "${APP_IMAGE}" .
+      - name: Verify Compose selects the immutable image
+        shell: bash
+        run: docker compose config --images | grep --fixed-strings --line-regexp "${APP_IMAGE}"
       - name: Start application and PostgreSQL
-        run: docker compose up --detach --build
+        run: docker compose up --detach --no-build
       - name: Wait for application readiness
         shell: bash
         run: |
@@ -76,6 +81,26 @@ jobs:
       - name: Two-browser room and chat E2E
         run: npm test
         working-directory: e2e
+      - name: Package the verified delivery candidate
+        shell: bash
+        run: |
+          mkdir --parents delivery
+          docker save --output delivery/minigame-image.tar "${APP_IMAGE}"
+          image_id="$(docker image inspect --format '{{.Id}}' "${APP_IMAGE}")"
+          archive_sha="$(sha256sum delivery/minigame-image.tar | cut --delimiter=' ' --fields=1)"
+          {
+            printf 'GIT_SHA=%q\n' "${GITHUB_SHA}"
+            printf 'APP_IMAGE=%q\n' "${APP_IMAGE}"
+            printf 'IMAGE_ID=%q\n' "${image_id}"
+            printf 'ARCHIVE_SHA256=%q\n' "${archive_sha}"
+          } > delivery/candidate.env
+      - name: Upload verified delivery candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-image-${{ github.sha }}
+          path: delivery
+          compression-level: 0
+          retention-days: 7
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -94,6 +119,13 @@ jobs:
     runs-on: ubuntu-latest
     environment: preview
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-image-${{ github.sha }}
+          path: delivery
+      - name: Verify preview uses the tested image artifact
+        run: bash .github/scripts/verify-delivery-candidate.sh delivery
       - name: Record verified preview candidate
         run: echo "preview candidate=${GITHUB_SHA} (Cloud Run deployment hook intentionally not enabled yet)"
 
@@ -103,5 +135,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-image-${{ github.sha }}
+          path: delivery
+      - name: Verify production uses the previewed image artifact
+        run: bash .github/scripts/verify-delivery-candidate.sh delivery
       - name: Record approved production candidate
         run: echo "production candidate=${GITHUB_SHA} (configure required reviewers on the production environment)"

@@ -13,6 +13,7 @@ services:
       timeout: 3s
       retries: 10
   app:
+    image: ${APP_IMAGE:-minigame:local}
     build: .
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/minigame
