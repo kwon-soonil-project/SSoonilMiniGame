@@ -61,7 +61,7 @@ export interface RoomRealtimePort {
   subscribe(destination: string, handler: (payload: unknown) => void): () => void
   subscribeConnectionState(handler: (state: ConnectionState) => void): () => void
   connect(): Promise<void>
-  publish(destination: string, body: string): void
+  publish(destination: string, body: string): void | Promise<void>
 }
 
 interface RoomCommand {
@@ -154,7 +154,9 @@ export const useRoomStore = defineStore('room', () => {
   let synchronizing = false
   let joined = false
   let connectedOnce = false
-  let recovery: Promise<RoomSnapshot> | null = null
+  let recovery: { generation: number; roomId: string; controller: AbortController; promise: Promise<RoomSnapshot> } | null = null
+  let joinRequest: AbortController | null = null
+  let joinGeneration = 0
   let bufferedPublicEvents: RoomEvent[] = []
   let bufferedPrivateEvents: RoomEvent[] = []
   let unsubscribePublic: (() => void) | null = null
@@ -162,6 +164,12 @@ export const useRoomStore = defineStore('room', () => {
   let unsubscribeState: (() => void) | null = null
 
   async function join(code: string, password = '', port: RoomRealtimePort = realtimeClient): Promise<void> {
+    const generation = ++joinGeneration
+    joinRequest?.abort()
+    recovery?.controller.abort()
+    recovery = null
+    const controller = new AbortController()
+    joinRequest = controller
     disposeSubscriptions()
     snapshot.value = null
     sequencer = null
@@ -177,26 +185,31 @@ export const useRoomStore = defineStore('room', () => {
     connectedOnce = false
     try {
       const joinedSnapshot = sanitizeSnapshot(await apiRequest<unknown>(`/api/v1/rooms/${code}/join`, {
-        method: 'POST', body: JSON.stringify({ password }),
+        method: 'POST', body: JSON.stringify({ password }), signal: controller.signal,
       }))
+      if (generation !== joinGeneration) return
       const roomId = joinedSnapshot.roomId
       synchronizing = true
       bufferedPublicEvents = []
       bufferedPrivateEvents = []
-      unsubscribePublic = realtime.subscribe(`/topic/rooms/${roomId}`, payload => applyPublicEvent(payload))
-      unsubscribePrivate = realtime.subscribe(`/user/queue/rooms/${roomId}`, payload => applyPrivateEvent(payload))
-      unsubscribeState = realtime.subscribeConnectionState(handleConnectionState)
+      unsubscribePublic = realtime.subscribe(`/topic/rooms/${roomId}`, payload => applyPublicEvent(payload, generation))
+      unsubscribePrivate = realtime.subscribe(`/user/queue/rooms/${roomId}`, payload => applyPrivateEvent(payload, generation))
+      unsubscribeState = realtime.subscribeConnectionState(state => handleConnectionState(state, generation))
       await realtime.connect()
-      const authoritative = await fetchSnapshot(roomId)
+      if (generation !== joinGeneration) return
+      const authoritative = await fetchSnapshot(roomId, controller.signal)
+      if (generation !== joinGeneration) return
       replaceSnapshot(authoritative)
-      sequencer = new EventSequencer(authoritative.sequence, () => reloadSnapshot(roomId))
+      sequencer = new EventSequencer(authoritative.sequence, () => reloadSnapshot(roomId, generation))
       synchronizing = false
-      for (const event of bufferedPublicEvents.splice(0)) await routeEvent(event)
-      for (const event of bufferedPrivateEvents.splice(0)) await applyPrivateEvent(event)
+      for (const event of bufferedPublicEvents.splice(0)) await routeEvent(event, generation)
+      for (const event of bufferedPrivateEvents.splice(0)) await applyPrivateEvent(event, generation)
+      if (generation !== joinGeneration) return
       joined = true
       connectedOnce = true
       connection.value = 'connected'
     } catch (cause) {
+      if (generation !== joinGeneration) return
       synchronizing = false
       connection.value = 'failed'
       passwordRequired.value = cause instanceof ApiError && cause.code === 'ROOM_PASSWORD_INVALID'
@@ -206,50 +219,71 @@ export const useRoomStore = defineStore('room', () => {
       disposeSubscriptions()
       throw cause
     } finally {
-      loading.value = false
+      if (generation === joinGeneration) {
+        loading.value = false
+        if (joinRequest === controller) joinRequest = null
+      }
     }
   }
 
-  async function fetchSnapshot(roomId: string): Promise<RoomSnapshot> {
-    return sanitizeSnapshot(await apiRequest<unknown>(`/api/v1/rooms/${roomId}/snapshot`))
+  async function fetchSnapshot(roomId: string, signal?: AbortSignal): Promise<RoomSnapshot> {
+    return sanitizeSnapshot(await apiRequest<unknown>(`/api/v1/rooms/${roomId}/snapshot`, { signal }))
   }
 
-  function reloadSnapshot(roomId: string): Promise<RoomSnapshot> {
-    if (recovery) return recovery
-    recovery = fetchSnapshot(roomId).then(recovered => {
-      replaceSnapshot(recovered)
+  function reloadSnapshot(roomId: string, generation: number = joinGeneration): Promise<RoomSnapshot> {
+    if (recovery?.roomId === roomId && recovery.generation === generation) return recovery.promise
+    recovery?.controller.abort()
+    const controller = new AbortController()
+    const pending = fetchSnapshot(roomId, controller.signal).then(recovered => {
+      if (generation === joinGeneration) replaceSnapshot(recovered)
       return recovered
-    }).finally(() => { recovery = null })
-    return recovery
+    })
+    const entry = { generation, roomId, controller, promise: pending }
+    recovery = entry
+    void pending.finally(() => { if (recovery === entry) recovery = null }).catch(() => undefined)
+    return pending
   }
 
   function replaceSnapshot(next: RoomSnapshot): void {
     snapshot.value = sanitizeSnapshot(next)
   }
 
-  async function applyPublicEvent(payload: unknown): Promise<void> {
+  async function applyPublicEvent(payload: unknown, generation: number = joinGeneration): Promise<void> {
+    if (generation !== joinGeneration) return
     if (!isRoomEvent(payload) || (snapshot.value && payload.roomId !== snapshot.value.roomId)) return
     if (synchronizing || !sequencer) {
       bufferedPublicEvents.push(payload)
       return
     }
-    await routeEvent(payload)
+    try {
+      await routeEvent(payload, generation)
+    } catch (cause) {
+      handleRecoveryFailure(cause, generation)
+    }
   }
 
-  async function routeEvent(event: RoomEvent): Promise<void> {
+  async function routeEvent(event: RoomEvent, generation: number = joinGeneration): Promise<void> {
+    if (generation !== joinGeneration) return
     await sequencer?.accept(event, accepted => mutateFromEvent(accepted as RoomEvent))
-    if (snapshot.value && sequencer) snapshot.value.sequence = sequencer.current
+    if (generation === joinGeneration && snapshot.value && sequencer) snapshot.value.sequence = sequencer.current
   }
 
-  async function applyPrivateEvent(payload: unknown): Promise<void> {
+  async function applyPrivateEvent(payload: unknown, generation: number = joinGeneration): Promise<void> {
+    if (generation !== joinGeneration) return
     if (!isRoomEvent(payload) || (snapshot.value && payload.roomId !== snapshot.value.roomId)) return
     if (synchronizing) {
       bufferedPrivateEvents.push(payload)
       return
     }
     if (payload.sequence > (sequencer?.current ?? 0) + 1 && snapshot.value) {
-      const recovered = await reloadSnapshot(snapshot.value.roomId)
-      sequencer?.reset(recovered.sequence)
+      try {
+        const recovered = await reloadSnapshot(snapshot.value.roomId, generation)
+        if (generation !== joinGeneration) return
+        sequencer?.reset(recovered.sequence)
+      } catch (cause) {
+        handleRecoveryFailure(cause, generation)
+        return
+      }
     }
     if (payload.type === 'COMMAND_REJECTED') {
       const code = stringValue(payload.payload.code, 'ROOM_COMMAND_INVALID')
@@ -316,27 +350,66 @@ export const useRoomStore = defineStore('room', () => {
     }
   }
 
-  function handleConnectionState(state: ConnectionState): void {
+  function handleConnectionState(state: ConnectionState, generation: number = joinGeneration): void {
+    if (generation !== joinGeneration) return
     if (state === 'connecting') connection.value = 'connecting'
     if (state === 'reconnecting' || state === 'disconnected') connection.value = 'reconnecting'
     if (state === 'failed') connection.value = 'failed'
     if (state !== 'connected') return
-    connection.value = 'connected'
     if (connectedOnce && joined && snapshot.value) {
-      const roomId = snapshot.value.roomId
-      void reloadSnapshot(roomId).then(recovered => sequencer?.reset(recovered.sequence)).catch(cause => {
-        connection.value = 'failed'
-        error.value = cause instanceof Error ? cause.message : '방 상태를 복구하지 못했습니다.'
-      })
+      void synchronizeCurrentRoom(generation)
+    } else {
+      connection.value = 'connected'
     }
     connectedOnce = true
   }
 
+  async function synchronizeCurrentRoom(generation: number = joinGeneration): Promise<void> {
+    const roomId = snapshot.value?.roomId
+    if (!roomId || generation !== joinGeneration) return
+    connection.value = 'reconnecting'
+    synchronizing = true
+    bufferedPublicEvents = []
+    bufferedPrivateEvents = []
+    try {
+      const recovered = await reloadSnapshot(roomId, generation)
+      if (generation !== joinGeneration) return
+      sequencer?.reset(recovered.sequence)
+      synchronizing = false
+      for (const event of bufferedPublicEvents.splice(0)) await routeEvent(event, generation)
+      for (const event of bufferedPrivateEvents.splice(0)) await applyPrivateEvent(event, generation)
+      if (generation !== joinGeneration) return
+      error.value = null
+      connection.value = 'connected'
+    } catch (cause) {
+      handleRecoveryFailure(cause, generation)
+    }
+  }
+
+  function handleRecoveryFailure(cause: unknown, generation: number): void {
+    if (generation !== joinGeneration) return
+    synchronizing = false
+    bufferedPublicEvents = []
+    bufferedPrivateEvents = []
+    connection.value = 'failed'
+    error.value = cause instanceof Error ? cause.message : '방 상태를 복구하지 못했습니다.'
+  }
+
   function publish(type: RoomCommand['type'], payload: Record<string, unknown>): void {
-    if (!snapshot.value) throw new Error('입장한 방이 없습니다.')
+    if (!snapshot.value || connection.value !== 'connected') {
+      commandError.value = '실시간 연결을 복구한 뒤 다시 시도해 주세요.'
+      return
+    }
     commandError.value = null
     const command: RoomCommand = { requestId: crypto.randomUUID(), type, payload }
-    realtime.publish(`/app/rooms/${snapshot.value.roomId}/commands`, JSON.stringify(command))
+    try {
+      const sent = realtime.publish(`/app/rooms/${snapshot.value.roomId}/commands`, JSON.stringify(command))
+      if (sent instanceof Promise) {
+        void sent.catch(() => { commandError.value = '실시간 요청을 보내지 못했습니다. 다시 시도해 주세요.' })
+      }
+    } catch {
+      commandError.value = '실시간 요청을 보내지 못했습니다. 다시 시도해 주세요.'
+    }
   }
 
   function sendReady(ready: boolean): void { publish('PLAYER_READY', { ready }) }
@@ -368,17 +441,23 @@ export const useRoomStore = defineStore('room', () => {
   }
 
   function clearRoom(): void {
+    joinGeneration += 1
+    joinRequest?.abort()
+    joinRequest = null
+    recovery?.controller.abort()
     disposeSubscriptions()
     snapshot.value = null
     sequencer = null
     joined = false
     chats.value = []
     unreadChatCount.value = 0
+    synchronizing = false
+    recovery = null
   }
 
   return {
     snapshot, connection, loading, error, commandError, passwordRequired, chats, unreadChatCount,
     chatOpen, join, applyPublicEvent, applyPrivateEvent, sendReady, sendChat, sendAnswer,
-    updateSettings, leave, openChat, closeChat, clearRoom,
+    updateSettings, leave, openChat, closeChat, clearRoom, retryRecovery: synchronizeCurrentRoom,
   }
 })

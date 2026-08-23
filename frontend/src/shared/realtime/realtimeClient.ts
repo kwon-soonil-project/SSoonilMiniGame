@@ -1,4 +1,4 @@
-import { Client, type IMessage } from '@stomp/stompjs'
+import { Client, ReconnectionTimeMode, type IMessage, type StompConfig } from '@stomp/stompjs'
 import { readonly, ref, type DeepReadonly, type Ref } from 'vue'
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
@@ -26,12 +26,18 @@ function websocketUrl(): string {
   return `${protocol}//${window.location.host}/ws`
 }
 
-function defaultFactory(): StompClientPort {
-  return new Client({
+export function stompClientConfig(): StompConfig {
+  return {
     brokerURL: websocketUrl(),
-    reconnectDelay: 2_000,
+    reconnectTimeMode: ReconnectionTimeMode.EXPONENTIAL,
+    reconnectDelay: 1_000,
+    maxReconnectDelay: 15_000,
     connectionTimeout: 8_000,
-  }) as unknown as StompClientPort
+  }
+}
+
+function defaultFactory(): StompClientPort {
+  return new Client(stompClientConfig()) as unknown as StompClientPort
 }
 
 export class RealtimeClient {

@@ -37,7 +37,7 @@ describe('RoomView', () => {
 
     expect(wrapper.get('[data-region="participants"]').text()).toContain('참가감자')
     expect(wrapper.get('[data-region="settings"]').find('select').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[data-region="chat"]').get('label[for="room-chat-input"]').text()).toContain('메시지 입력')
+    expect(wrapper.get('[data-region="chat"]').get('label').text()).toContain('메시지 입력')
     expect(wrapper.get('button[data-action="ready"]').text()).toContain('준비')
   })
 
@@ -54,11 +54,11 @@ describe('RoomView', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[data-action="open-mobile-chat"]').text()).toContain('2')
-    await wrapper.get('#room-chat-input').setValue('정답처럼 보이지만 지금은 채팅')
+    await wrapper.get('[data-region="chat"] input').setValue('정답처럼 보이지만 지금은 채팅')
     await wrapper.get('[data-region="chat"] form').trigger('submit')
 
     expect(store.sendChat).toHaveBeenCalledWith('정답처럼 보이지만 지금은 채팅')
-    expect((wrapper.get('#room-chat-input').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('[data-region="chat"] input').element as HTMLInputElement).value).toBe('')
   })
 
   it('closes the mobile chat sheet with Escape and restores the opener focus', async () => {
@@ -74,5 +74,55 @@ describe('RoomView', () => {
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(document.activeElement).toBe(opener.element)
     wrapper.unmount()
+  })
+
+  it('joins immediately when the same routed component receives a different room code', async () => {
+    const { wrapper, store } = mountRoom()
+
+    await wrapper.setProps({ code: '654321' })
+
+    expect(store.join).toHaveBeenCalledWith('654321', '')
+  })
+
+  it('disables ready, settings, and every chat composer while realtime is unavailable', async () => {
+    const { wrapper, store } = mountRoom()
+    store.chatOpen = true
+    store.connection = 'reconnecting'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-action="ready"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-region="settings"] select').attributes('disabled')).toBeDefined()
+    const chatInputs = wrapper.findAll('[data-region="chat"] input')
+    expect(chatInputs).toHaveLength(2)
+    expect(chatInputs.every(input => input.attributes('disabled') !== undefined)).toBe(true)
+  })
+
+  it('gives simultaneously mounted desktop and mobile chat instances unique accessible IDs', async () => {
+    const { wrapper, store } = mountRoom()
+    store.chatOpen = true
+    await wrapper.vm.$nextTick()
+
+    const chats = wrapper.findAll('[data-region="chat"]')
+    const inputIds = chats.map(chat => chat.get('input').attributes('id'))
+    const titleIds = chats.map(chat => chat.get('h2').attributes('id'))
+
+    expect(new Set(inputIds).size).toBe(2)
+    expect(new Set(titleIds).size).toBe(2)
+    chats.forEach((chat, index) => {
+      expect(chat.get('label').attributes('for')).toBe(inputIds[index])
+      expect(chat.attributes('aria-labelledby')).toBe(titleIds[index])
+    })
+  })
+
+  it('offers an explicit snapshot retry after recovery enters the failed state', async () => {
+    const { wrapper, store } = mountRoom()
+    store.connection = 'failed'
+    store.error = '방 상태를 다시 불러오지 못했습니다.'
+    store.retryRecovery = vi.fn(async () => undefined)
+    await wrapper.vm.$nextTick()
+
+    await wrapper.get('[data-action="retry-room-recovery"]').trigger('click')
+
+    expect(store.retryRecovery).toHaveBeenCalledOnce()
   })
 })

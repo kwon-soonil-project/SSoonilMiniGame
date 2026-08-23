@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, ref, useId, watch } from 'vue'
 import type { RoomChatMessage } from './roomStore'
 
 export type RoomInputMode = 'CHAT' | 'ANSWER'
@@ -13,6 +13,9 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ submit: [submission: RoomInputSubmission] }>()
 const body = ref('')
 const messageList = ref<HTMLElement | null>(null)
+const componentId = useId()
+const titleId = `room-chat-title-${componentId}`
+const inputId = `room-chat-input-${componentId}`
 
 watch(() => props.messages.length, async () => {
   await nextTick()
@@ -28,8 +31,8 @@ function submit(): void {
 </script>
 
 <template>
-  <section class="chat-panel" data-region="chat" aria-labelledby="chat-title">
-    <header><div><p class="eyebrow">ROOM CHAT</p><h2 id="chat-title">대화</h2></div><span aria-live="polite">{{ messages.length }}개</span></header>
+  <section class="chat-panel" data-region="chat" :aria-labelledby="titleId">
+    <header><div><p class="eyebrow">ROOM CHAT</p><h2 :id="titleId">대화</h2></div><span aria-live="polite">{{ messages.length }}개</span></header>
     <ol ref="messageList" aria-live="polite" aria-relevant="additions">
       <li v-for="message in messages" :key="message.messageId">
         <strong>{{ message.nickname }}</strong><p>{{ message.body }}</p>
@@ -37,8 +40,8 @@ function submit(): void {
       <li v-if="messages.length === 0" class="empty">첫 메시지를 남겨보세요.</li>
     </ol>
     <form @submit.prevent="submit">
-      <label for="room-chat-input">{{ mode === 'ANSWER' ? '정답 입력' : '메시지 입력' }}</label>
-      <div><input id="room-chat-input" v-model="body" maxlength="300" autocomplete="off" :disabled="disabled" :placeholder="mode === 'ANSWER' ? '정답을 입력하세요' : '메시지를 입력하세요'"><button type="submit" :disabled="disabled">{{ mode === 'ANSWER' ? '정답 제출' : '전송' }}</button></div>
+      <label :for="inputId">{{ mode === 'ANSWER' ? '정답 입력' : '메시지 입력' }}</label>
+      <div><input :id="inputId" v-model="body" maxlength="300" autocomplete="off" :disabled="disabled" :placeholder="mode === 'ANSWER' ? '정답을 입력하세요' : '메시지를 입력하세요'"><button type="submit" :disabled="disabled">{{ mode === 'ANSWER' ? '정답 제출' : '전송' }}</button></div>
     </form>
   </section>
 </template>

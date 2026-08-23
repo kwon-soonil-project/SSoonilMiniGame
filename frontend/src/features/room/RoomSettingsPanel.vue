@@ -2,7 +2,9 @@
 import { reactive, watch } from 'vue'
 import type { GameType, RoomSettings } from './roomStore'
 
-const props = defineProps<{ settings: RoomSettings; editable: boolean }>()
+const props = withDefaults(defineProps<{ settings: RoomSettings; editable: boolean; readOnlyLabel?: string }>(), {
+  readOnlyLabel: '방장만 변경',
+})
 const emit = defineEmits<{ save: [settings: RoomSettings] }>()
 
 const form = reactive<RoomSettings>({ ...props.settings })
@@ -24,7 +26,7 @@ function save(): void {
   <section class="settings-panel" data-region="settings" aria-labelledby="settings-title">
     <header>
       <div><p class="eyebrow">GAME SETUP</p><h2 id="settings-title">게임 설정</h2></div>
-      <span v-if="!editable">방장만 변경</span>
+      <span v-if="!editable">{{ readOnlyLabel }}</span>
     </header>
     <form @submit.prevent="save">
       <label>게임

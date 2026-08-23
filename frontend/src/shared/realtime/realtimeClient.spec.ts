@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RealtimeClient, type StompClientPort } from './realtimeClient'
+import { ReconnectionTimeMode } from '@stomp/stompjs'
+import { RealtimeClient, stompClientConfig, type StompClientPort } from './realtimeClient'
 
 describe('RealtimeClient', () => {
+  it('uses bounded exponential reconnection backoff for the shared STOMP client', () => {
+    const config = stompClientConfig()
+
+    expect(config.reconnectTimeMode).toBe(ReconnectionTimeMode.EXPONENTIAL)
+    expect(config.reconnectDelay).toBe(1_000)
+    expect(config.maxReconnectDelay).toBe(15_000)
+  })
+
   it('publishes room commands through the existing connected STOMP client', async () => {
     const publish = vi.fn()
     const client: StompClientPort = {
