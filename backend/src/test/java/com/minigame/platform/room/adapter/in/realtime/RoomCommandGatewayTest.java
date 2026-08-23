@@ -102,6 +102,33 @@ class RoomCommandGatewayTest {
     }
 
     @Test
+    void changesGameTypeAndAppliesTheSelectedGameBounds() {
+        gateway.handle(
+                roomId,
+                HOST,
+                new RoomCommands.RoomCommand(
+                        "00000000-0000-0000-0000-000000005118",
+                        "ROOM_SETTINGS_UPDATE",
+                        Map.of(
+                                "gameType", "CHOSUNG",
+                                "maxParticipants", 11,
+                                "rounds", 5,
+                                "actionSeconds", 20,
+                                "discussionSeconds", 45,
+                                "categoryPack", "korean"
+                        )
+                )
+        );
+
+        var snapshot = rooms.snapshot(HOST, new RoomId(roomId));
+        assertThat(snapshot.gameType()).isEqualTo(GameType.CHOSUNG);
+        assertThat(snapshot.maxParticipants()).isEqualTo(11);
+        assertThat(snapshot.rounds()).isEqualTo(5);
+        assertThat(publisher.publicEvents.getLast().type()).isEqualTo("ROOM_SETTINGS_UPDATED");
+        assertThat(publisher.privateEvents).isEmpty();
+    }
+
+    @Test
     void broadcastsAnAcceptedChatAndKeepsItInBoundedHistory() {
         gateway.handle(
                 roomId,
@@ -364,6 +391,78 @@ class RoomCommandGatewayTest {
         });
     }
 
+    @Test
+    void serializesCreationAndImmediateJoinLobbyPublication() throws Exception {
+        var repository = new InMemoryActiveRoomRepository();
+        var barrierPublisher = new CreationPublishBarrierPublisher();
+        var orderedRooms = new RoomApplicationService(
+                repository,
+                new PlainPasswordEncoder(),
+                barrierPublisher,
+                CLOCK
+        );
+        var guest = ActorPrincipal.guest(new ActorId("immediate-join-guest"), "즉시참가감자");
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var creation = executor.submit(() -> orderedRooms.create(
+                    HOST,
+                    "생성 발행 순서방",
+                    Visibility.PUBLIC,
+                    null,
+                    GameType.LIAR,
+                    "00000000-0000-0000-0000-000000005119"
+            ));
+            assertThat(barrierPublisher.creationAtPublisher.await(5, TimeUnit.SECONDS)).isTrue();
+            var pending = (RoomApplicationService.LobbyRoomView) barrierPublisher.pendingCreation.payload();
+
+            var join = executor.submit(() -> orderedRooms.join(
+                    guest,
+                    new RoomCode(pending.code()),
+                    null,
+                    "00000000-0000-0000-0000-000000005120"
+            ));
+            barrierPublisher.joinAtPublisher.await(300, TimeUnit.MILLISECONDS);
+            barrierPublisher.releaseCreation.countDown();
+            creation.get(5, TimeUnit.SECONDS);
+            join.get(5, TimeUnit.SECONDS);
+        }
+
+        assertThat(barrierPublisher.lobbyEvents).extracting(EventEnvelope::sequence)
+                .containsExactly(0L, 1L);
+    }
+
+    @Test
+    void returnsOneRoomAndOneLobbyDeltaForConcurrentDuplicateCreateRequests() throws Exception {
+        var repository = new AfterSaveBarrierRepository();
+        var duplicatePublisher = new RecordingPublisher();
+        var duplicateRooms = new RoomApplicationService(
+                repository,
+                new PlainPasswordEncoder(),
+                duplicatePublisher,
+                CLOCK
+        );
+        var requestId = "00000000-0000-0000-0000-000000005121";
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(() -> duplicateRooms.create(
+                    HOST, "중복 생성방", Visibility.PUBLIC, null, GameType.LIAR, requestId
+            ));
+            assertThat(repository.saved.await(5, TimeUnit.SECONDS)).isTrue();
+            var second = executor.submit(() -> duplicateRooms.create(
+                    HOST, "중복 생성방", Visibility.PUBLIC, null, GameType.LIAR, requestId
+            ));
+
+            repository.releaseSave.countDown();
+            var firstResult = first.get(5, TimeUnit.SECONDS);
+            var secondResult = second.get(5, TimeUnit.SECONDS);
+
+            assertThat(secondResult).isEqualTo(firstResult);
+        }
+
+        assertThat(repository.findAll()).hasSize(1);
+        assertThat(duplicatePublisher.lobbyEvents).hasSize(1);
+    }
+
     private static final class RecordingPublisher implements RoomEventPublisher {
         private final List<EventEnvelope<?>> publicEvents = new CopyOnWriteArrayList<>();
         private final List<PrivateDelivery> privateEvents = new CopyOnWriteArrayList<>();
@@ -388,6 +487,41 @@ class RoomCommandGatewayTest {
             publicEvents.clear();
             privateEvents.clear();
             lobbyEvents.clear();
+        }
+    }
+
+    private static final class CreationPublishBarrierPublisher implements RoomEventPublisher {
+        private final List<EventEnvelope<?>> lobbyEvents = new CopyOnWriteArrayList<>();
+        private final CountDownLatch creationAtPublisher = new CountDownLatch(1);
+        private final CountDownLatch joinAtPublisher = new CountDownLatch(1);
+        private final CountDownLatch releaseCreation = new CountDownLatch(1);
+        private volatile EventEnvelope<?> pendingCreation;
+
+        @Override
+        public void publishPublic(EventEnvelope<?> event) {
+        }
+
+        @Override
+        public void publishPrivate(String userName, EventEnvelope<?> event) {
+        }
+
+        @Override
+        public void publishLobby(EventEnvelope<?> event) {
+            if (event.sequence() == 0L && "LOBBY_ROOM_UPSERT".equals(event.type())) {
+                pendingCreation = event;
+                creationAtPublisher.countDown();
+                try {
+                    if (!releaseCreation.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("creation publication release timed out");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(exception);
+                }
+            } else if (event.sequence() == 1L && "LOBBY_ROOM_UPSERT".equals(event.type())) {
+                joinAtPublisher.countDown();
+            }
+            lobbyEvents.add(event);
         }
     }
 

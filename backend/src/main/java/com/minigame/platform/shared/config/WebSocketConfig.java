@@ -16,6 +16,7 @@ import org.springframework.http.server.ServletServerHttpRequest;
 import org.springframework.http.server.ServletServerHttpResponse;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.simp.SimpMessageType;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.messaging.simp.stomp.StompCommand;
@@ -31,7 +32,9 @@ import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
 import java.security.Principal;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 @Configuration(proxyBeanMethods = false)
@@ -40,6 +43,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final SessionTokenService tokenService;
     private final ActiveRoomRepository rooms;
     private final String[] allowedOrigins;
+    private final StompSessionActors sessionActors = new StompSessionActors();
 
     public WebSocketConfig(
             SessionTokenService tokenService,
@@ -67,6 +71,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
+        registry.setPreservePublishOrder(true);
         registry.setApplicationDestinationPrefixes("/app");
         registry.setUserDestinationPrefix("/user");
         registry.enableSimpleBroker("/topic", "/queue");
@@ -74,7 +79,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new ActorMessageBoundaryInterceptor(rooms));
+        registration.interceptors(new ActorMessageBoundaryInterceptor(rooms, sessionActors));
+    }
+
+    @Override
+    public void configureClientOutboundChannel(ChannelRegistration registration) {
+        registration.interceptors(new RoomOutboundBoundaryInterceptor(rooms, sessionActors));
     }
 }
 
@@ -157,9 +167,15 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
     );
 
     private final ActiveRoomRepository rooms;
+    private final StompSessionActors sessionActors;
 
     ActorMessageBoundaryInterceptor(ActiveRoomRepository rooms) {
+        this(rooms, new StompSessionActors());
+    }
+
+    ActorMessageBoundaryInterceptor(ActiveRoomRepository rooms, StompSessionActors sessionActors) {
         this.rooms = rooms;
+        this.sessionActors = sessionActors;
     }
 
     @Override
@@ -169,6 +185,10 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
         if (command == null) {
             return message;
         }
+        if (command == StompCommand.DISCONNECT) {
+            sessionActors.remove(accessor.getSessionId());
+            return message;
+        }
         if (command == StompCommand.CONNECT
                 || command == StompCommand.SEND
                 || command == StompCommand.SUBSCRIBE) {
@@ -176,6 +196,9 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
                 throw new AccessDeniedException("APP_SESSION principal required");
             }
             authorizeDestination(command, accessor.getDestination(), actor);
+            if (command == StompCommand.CONNECT) {
+                sessionActors.put(accessor.getSessionId(), actor);
+            }
         }
         return message;
     }
@@ -204,6 +227,70 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
                 .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
         if (!participant) {
             throw new AccessDeniedException("Room participant required");
+        }
+    }
+}
+
+final class RoomOutboundBoundaryInterceptor implements org.springframework.messaging.support.ChannelInterceptor {
+    private static final Pattern ROOM_DELIVERY = Pattern.compile(
+            "^/(?:topic|queue)/rooms/([0-9a-fA-F-]{36})$"
+    );
+
+    private final ActiveRoomRepository rooms;
+    private final StompSessionActors sessionActors;
+
+    RoomOutboundBoundaryInterceptor(ActiveRoomRepository rooms, StompSessionActors sessionActors) {
+        this.rooms = rooms;
+        this.sessionActors = sessionActors;
+    }
+
+    @Override
+    public Message<?> preSend(Message<?> message, MessageChannel channel) {
+        var accessor = StompHeaderAccessor.wrap(message);
+        if (accessor.getMessageType() != SimpMessageType.MESSAGE) {
+            return message;
+        }
+        var matcher = ROOM_DELIVERY.matcher(
+                accessor.getDestination() == null ? "" : accessor.getDestination()
+        );
+        if (!matcher.matches()) {
+            return message;
+        }
+        var actor = sessionActors.find(accessor.getSessionId()).orElse(null);
+        if (actor == null) {
+            return null;
+        }
+        final RoomId roomId;
+        try {
+            roomId = new RoomId(UUID.fromString(matcher.group(1)));
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+        var participant = rooms.findById(roomId)
+                .stream()
+                .flatMap(room -> room.participants().stream())
+                .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
+        return participant ? message : null;
+    }
+}
+
+final class StompSessionActors {
+    private final ConcurrentHashMap<String, ActorPrincipal> actors = new ConcurrentHashMap<>();
+
+    void put(String sessionId, ActorPrincipal actor) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new AccessDeniedException("STOMP session ID required");
+        }
+        actors.put(sessionId, actor);
+    }
+
+    Optional<ActorPrincipal> find(String sessionId) {
+        return Optional.ofNullable(sessionId).map(actors::get);
+    }
+
+    void remove(String sessionId) {
+        if (sessionId != null) {
+            actors.remove(sessionId);
         }
     }
 }

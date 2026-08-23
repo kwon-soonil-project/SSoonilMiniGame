@@ -3,6 +3,7 @@ package com.minigame.platform.room.adapter.in.realtime;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.RoomApplicationService;
+import com.minigame.platform.room.domain.GameType;
 import com.minigame.platform.room.domain.RoomId;
 import com.minigame.platform.room.domain.RoomRuleViolation;
 import com.minigame.platform.room.domain.RoomSettings;
@@ -91,12 +92,11 @@ public class RoomCommandGateway {
             RoomId roomId,
             RoomCommands.RoomCommand command
     ) {
-        var current = rooms.snapshot(actor, roomId);
         rooms.updateSettings(
                 actor,
                 roomId,
                 new RoomSettings(
-                        current.gameType(),
+                        GameType.valueOf(stringValue(command.payload(), "gameType")),
                         intValue(command.payload(), "maxParticipants"),
                         intValue(command.payload(), "rounds"),
                         intValue(command.payload(), "actionSeconds"),

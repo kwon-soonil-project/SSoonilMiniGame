@@ -116,13 +116,13 @@ public final class ChatPolicy {
         if (rawBody == null) {
             throw new ChatPolicyViolation("CHAT_LENGTH_INVALID");
         }
+        if (rawBody.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ChatPolicyViolation("CHAT_CONTROL_CHARACTER");
+        }
         var body = rawBody.strip();
         var length = body.codePointCount(0, body.length());
         if (length < 1 || length > MAX_BODY_CODE_POINTS) {
             throw new ChatPolicyViolation("CHAT_LENGTH_INVALID");
-        }
-        if (body.codePoints().anyMatch(Character::isISOControl)) {
-            throw new ChatPolicyViolation("CHAT_CONTROL_CHARACTER");
         }
         if (URL.matcher(body).find()) {
             throw new ChatPolicyViolation("CHAT_URL_NOT_ALLOWED");

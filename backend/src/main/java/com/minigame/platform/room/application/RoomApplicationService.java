@@ -19,12 +19,15 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Service
@@ -33,6 +36,7 @@ public class RoomApplicationService {
     private static final int DEFAULT_ACTION_SECONDS = 30;
     private static final int DEFAULT_DISCUSSION_SECONDS = 90;
     private static final String DEFAULT_CATEGORY_PACK = "all";
+    private static final int REMEMBERED_CREATE_REQUEST_LIMIT = 1_024;
 
     private final ActiveRoomRepository repository;
     private final PasswordEncoder passwordEncoder;
@@ -40,6 +44,11 @@ public class RoomApplicationService {
     private final Clock clock;
     private final ChatPolicy chatPolicy;
     private final Map<RoomId, String> passwordHashes = new ConcurrentHashMap<>();
+    private final Map<RoomId, Object> lobbyPublicationLocks = new ConcurrentHashMap<>();
+    private final Map<RoomId, Long> lobbyPublishedSequences = new ConcurrentHashMap<>();
+    private final Map<CreateRequestKey, CompletableFuture<RoomSnapshotView>> createRequests =
+            new ConcurrentHashMap<>();
+    private final ArrayDeque<CreateRequestKey> createRequestOrder = new ArrayDeque<>();
 
     @Autowired
     public RoomApplicationService(
@@ -109,6 +118,32 @@ public class RoomApplicationService {
             String requestId
     ) {
         Objects.requireNonNull(actor, "actor");
+        var requestKey = new CreateRequestKey(actor.actorId().value(), canonicalUuid(requestId));
+        var pending = new CompletableFuture<RoomSnapshotView>();
+        var existing = createRequests.putIfAbsent(requestKey, pending);
+        if (existing != null) {
+            return completedCreate(existing);
+        }
+        try {
+            var created = createOnce(actor, title, visibility, password, gameType, requestId);
+            pending.complete(created);
+            rememberCreateRequest(requestKey);
+            return created;
+        } catch (RuntimeException exception) {
+            pending.completeExceptionally(exception);
+            createRequests.remove(requestKey, pending);
+            throw exception;
+        }
+    }
+
+    private RoomSnapshotView createOnce(
+            ActorPrincipal actor,
+            String title,
+            Visibility visibility,
+            String password,
+            GameType gameType,
+            String requestId
+    ) {
         var settings = new RoomSettings(
                 gameType,
                 gameType.maximumParticipants(),
@@ -146,6 +181,39 @@ public class RoomApplicationService {
             publishLobbyUpsert(publishedSnapshot, actor, requestId);
         }
         return view;
+    }
+
+    private static UUID canonicalUuid(String requestId) {
+        if (requestId == null || requestId.length() != 36) {
+            throw violation("ROOM_REQUEST_ID_INVALID");
+        }
+        try {
+            var value = UUID.fromString(requestId);
+            if (!value.toString().equalsIgnoreCase(requestId)) {
+                throw violation("ROOM_REQUEST_ID_INVALID");
+            }
+            return value;
+        } catch (IllegalArgumentException exception) {
+            throw violation("ROOM_REQUEST_ID_INVALID");
+        }
+    }
+
+    private static RoomSnapshotView completedCreate(CompletableFuture<RoomSnapshotView> existing) {
+        try {
+            return existing.join();
+        } catch (CompletionException exception) {
+            if (exception.getCause() instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw exception;
+        }
+    }
+
+    private synchronized void rememberCreateRequest(CreateRequestKey requestKey) {
+        createRequestOrder.addLast(requestKey);
+        if (createRequestOrder.size() > REMEMBERED_CREATE_REQUEST_LIMIT) {
+            createRequests.remove(createRequestOrder.removeFirst());
+        }
     }
 
     public RoomSnapshotView join(
@@ -383,15 +451,17 @@ public class RoomApplicationService {
         if (room.visibility() != Visibility.PUBLIC || room.status() == RoomStatus.CLOSED) {
             return;
         }
-        eventPublisher.publishLobby(EventEnvelope.create(
-                requestId,
-                room.id(),
-                actor,
-                "LOBBY_ROOM_UPSERT",
-                room.sequence(),
-                clock,
-                lobbyView(room)
-        ));
+        publishLobbyInSequence(room.id(), room.sequence(), () ->
+                eventPublisher.publishLobby(EventEnvelope.create(
+                        requestId,
+                        room.id(),
+                        actor,
+                        "LOBBY_ROOM_UPSERT",
+                        room.sequence(),
+                        clock,
+                        lobbyView(room)
+                ))
+        );
     }
 
     private void publishLobbyRemove(
@@ -402,15 +472,29 @@ public class RoomApplicationService {
         if (room.visibility() != Visibility.PUBLIC) {
             return;
         }
-        eventPublisher.publishLobby(EventEnvelope.create(
-                requestId,
-                room.id(),
-                actor,
-                "LOBBY_ROOM_REMOVE",
-                room.sequence(),
-                clock,
-                Map.of("roomId", room.id().value().toString())
-        ));
+        publishLobbyInSequence(room.id(), room.sequence(), () ->
+                eventPublisher.publishLobby(EventEnvelope.create(
+                        requestId,
+                        room.id(),
+                        actor,
+                        "LOBBY_ROOM_REMOVE",
+                        room.sequence(),
+                        clock,
+                        Map.of("roomId", room.id().value().toString())
+                ))
+        );
+    }
+
+    private void publishLobbyInSequence(RoomId roomId, long sequence, Runnable publication) {
+        var lock = lobbyPublicationLocks.computeIfAbsent(roomId, ignored -> new Object());
+        synchronized (lock) {
+            var lastPublished = lobbyPublishedSequences.get(roomId);
+            if (lastPublished != null && sequence <= lastPublished) {
+                return;
+            }
+            publication.run();
+            lobbyPublishedSequences.put(roomId, sequence);
+        }
     }
 
     private static String eventType(RoomEvent event) {
@@ -507,5 +591,8 @@ public class RoomApplicationService {
             int maxParticipants,
             String hostNickname
     ) {
+    }
+
+    private record CreateRequestKey(String actorId, UUID requestId) {
     }
 }

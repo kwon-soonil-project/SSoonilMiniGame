@@ -49,6 +49,7 @@ class ChatPolicyTest {
 
         assertRejected(policy, "https://example.com", "CHAT_URL_NOT_ALLOWED", allocations);
         assertRejected(policy, "example.com/rooms/123", "CHAT_URL_NOT_ALLOWED", allocations);
+        assertRejected(policy, "\ttrimmed away", "CHAT_CONTROL_CHARACTER", allocations);
         assertRejected(policy, "hello\nworld", "CHAT_CONTROL_CHARACTER", allocations);
         assertRejected(policy, "   ", "CHAT_LENGTH_INVALID", allocations);
         assertRejected(policy, "가".repeat(301), "CHAT_LENGTH_INVALID", allocations);
