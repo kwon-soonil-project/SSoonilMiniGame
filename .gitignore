@@ -1,0 +1,24 @@
+# Superpowers brainstorming and SDD scratch work
+.superpowers/
+
+# Java / Gradle
+.gradle/
+**/build/
+
+# Node / Vue / Playwright
+**/node_modules/
+**/dist/
+**/playwright-report/
+**/test-results/
+
+# IDE and local environment
+.idea/
+.vscode/
+*.iml
+.env
+.env.*
+!.env.example
+
+# Generated Google GitHub Actions credentials
+gha-creds-*.json
+
