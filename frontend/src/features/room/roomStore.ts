@@ -36,6 +36,7 @@ export interface RoomSnapshot extends RoomSettings {
   hostId: string
   sequence: number
   participants: RoomParticipant[]
+  chats: RoomChatMessage[]
 }
 
 export interface RoomChatMessage {
@@ -96,6 +97,28 @@ function sanitizeParticipant(value: unknown): RoomParticipant | null {
   }
 }
 
+function sanitizeChatMessage(value: unknown): RoomChatMessage | null {
+  if (!isRecord(value) || typeof value.messageId !== 'string' || typeof value.actorId !== 'string'
+    || typeof value.nickname !== 'string' || typeof value.body !== 'string'
+    || typeof value.sentAt !== 'string') return null
+  return {
+    messageId: value.messageId,
+    actorId: value.actorId,
+    nickname: value.nickname,
+    body: value.body,
+    sentAt: value.sentAt,
+  }
+}
+
+function recentUniqueChats(values: unknown[]): RoomChatMessage[] {
+  const unique = new Map<string, RoomChatMessage>()
+  values.forEach(value => {
+    const message = sanitizeChatMessage(value)
+    if (message) unique.set(message.messageId, message)
+  })
+  return [...unique.values()].slice(-100)
+}
+
 function sanitizeSnapshot(value: unknown): RoomSnapshot {
   if (!isRecord(value) || typeof value.roomId !== 'string' || typeof value.code !== 'string') {
     throw new Error('방 상태 응답이 올바르지 않습니다.')
@@ -120,6 +143,7 @@ function sanitizeSnapshot(value: unknown): RoomSnapshot {
     discussionSeconds: numberValue(value.discussionSeconds),
     categoryPack: stringValue(value.categoryPack),
     participants,
+    chats: Array.isArray(value.chats) ? recentUniqueChats(value.chats) : [],
   }
 }
 
@@ -291,7 +315,9 @@ export const useRoomStore = defineStore('room', () => {
   }
 
   function replaceSnapshot(next: RoomSnapshot): void {
-    snapshot.value = sanitizeSnapshot(next)
+    const authoritative = sanitizeSnapshot(next)
+    snapshot.value = authoritative
+    chats.value = [...authoritative.chats]
   }
 
   async function applyPublicEvent(payload: unknown, generation: number = joinGeneration): Promise<void> {
@@ -374,26 +400,17 @@ export const useRoomStore = defineStore('room', () => {
         error.value = '방이 종료되었습니다.'
         break
       case 'CHAT_MESSAGE': {
-        const message = chatMessage(payload)
+        const message = sanitizeChatMessage(payload)
         if (message && !chats.value.some(item => item.messageId === message.messageId)) {
           chats.value.push(message)
           if (chats.value.length > 100) chats.value.shift()
+          room.chats = [...chats.value]
           if (!chatOpen.value) unreadChatCount.value += 1
         }
         break
       }
     }
     room.participantCount = room.participants.filter(participant => !participant.spectator).length
-  }
-
-  function chatMessage(payload: Record<string, unknown>): RoomChatMessage | null {
-    if (typeof payload.messageId !== 'string' || typeof payload.actorId !== 'string'
-      || typeof payload.nickname !== 'string' || typeof payload.body !== 'string'
-      || typeof payload.sentAt !== 'string') return null
-    return {
-      messageId: payload.messageId, actorId: payload.actorId, nickname: payload.nickname,
-      body: payload.body, sentAt: payload.sentAt,
-    }
   }
 
   function handleConnectionState(state: ConnectionState, generation: number = joinGeneration): void {

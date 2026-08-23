@@ -5,6 +5,7 @@ import com.minigame.platform.auth.application.InvalidSessionTokenException;
 import com.minigame.platform.auth.application.SessionTokenService;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.room.application.ActiveRoomRepository;
+import com.minigame.platform.room.application.RoomPresenceService;
 import com.minigame.platform.room.domain.RoomId;
 import jakarta.servlet.http.Cookie;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,9 +34,7 @@ import org.springframework.web.socket.server.support.DefaultHandshakeHandler;
 import java.security.Principal;
 import java.util.Arrays;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 @Configuration(proxyBeanMethods = false)
@@ -44,15 +43,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private final SessionTokenService tokenService;
     private final ActiveRoomRepository rooms;
     private final String[] allowedOrigins;
-    private final StompSessionActors sessionActors = new StompSessionActors();
+    private final RoomPresenceService presence;
 
     public WebSocketConfig(
             SessionTokenService tokenService,
             ActiveRoomRepository rooms,
+            RoomPresenceService presence,
             @Value("${app.websocket.allowed-origins}") String allowedOrigins
     ) {
         this.tokenService = tokenService;
         this.rooms = rooms;
+        this.presence = presence;
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
                 .map(String::strip)
                 .filter(origin -> !origin.isEmpty())
@@ -80,12 +81,12 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new ActorMessageBoundaryInterceptor(rooms, sessionActors));
+        registration.interceptors(new ActorMessageBoundaryInterceptor(rooms, presence));
     }
 
     @Override
     public void configureClientOutboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new RoomOutboundBoundaryInterceptor(rooms, sessionActors));
+        registration.interceptors(new RoomOutboundBoundaryInterceptor(rooms, presence));
     }
 }
 
@@ -168,15 +169,15 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
     );
 
     private final ActiveRoomRepository rooms;
-    private final StompSessionActors sessionActors;
+    private final RoomPresenceService presence;
 
     ActorMessageBoundaryInterceptor(ActiveRoomRepository rooms) {
-        this(rooms, new StompSessionActors());
+        this(rooms, null);
     }
 
-    ActorMessageBoundaryInterceptor(ActiveRoomRepository rooms, StompSessionActors sessionActors) {
+    ActorMessageBoundaryInterceptor(ActiveRoomRepository rooms, RoomPresenceService presence) {
         this.rooms = rooms;
-        this.sessionActors = sessionActors;
+        this.presence = presence;
     }
 
     @Override
@@ -187,7 +188,9 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
             return message;
         }
         if (command == StompCommand.DISCONNECT) {
-            sessionActors.remove(accessor.getSessionId());
+            if (presence != null) {
+                presence.disconnected(accessor.getSessionId());
+            }
             return message;
         }
         if (command == StompCommand.CONNECT
@@ -197,8 +200,8 @@ final class ActorMessageBoundaryInterceptor implements org.springframework.messa
                 throw new AccessDeniedException("APP_SESSION principal required");
             }
             authorizeDestination(command, accessor.getDestination(), actor);
-            if (command == StompCommand.CONNECT) {
-                sessionActors.put(accessor.getSessionId(), actor);
+            if (command == StompCommand.CONNECT && presence != null) {
+                presence.connected(accessor.getSessionId(), actor);
             }
         }
         return message;
@@ -241,11 +244,11 @@ final class RoomOutboundBoundaryInterceptor implements org.springframework.messa
     );
 
     private final ActiveRoomRepository rooms;
-    private final StompSessionActors sessionActors;
+    private final RoomPresenceService presence;
 
-    RoomOutboundBoundaryInterceptor(ActiveRoomRepository rooms, StompSessionActors sessionActors) {
+    RoomOutboundBoundaryInterceptor(ActiveRoomRepository rooms, RoomPresenceService presence) {
         this.rooms = rooms;
-        this.sessionActors = sessionActors;
+        this.presence = presence;
     }
 
     @Override
@@ -258,7 +261,7 @@ final class RoomOutboundBoundaryInterceptor implements org.springframework.messa
         if (roomId == null) {
             return message;
         }
-        var actor = sessionActors.find(accessor.getSessionId()).orElse(null);
+        var actor = presence.find(accessor.getSessionId()).orElse(null);
         if (actor == null) {
             return null;
         }
@@ -296,27 +299,6 @@ final class RoomOutboundBoundaryInterceptor implements org.springframework.messa
             return new RoomId(UUID.fromString(value));
         } catch (IllegalArgumentException exception) {
             throw new AccessDeniedException("Invalid room destination", exception);
-        }
-    }
-}
-
-final class StompSessionActors {
-    private final ConcurrentHashMap<String, ActorPrincipal> actors = new ConcurrentHashMap<>();
-
-    void put(String sessionId, ActorPrincipal actor) {
-        if (sessionId == null || sessionId.isBlank()) {
-            throw new AccessDeniedException("STOMP session ID required");
-        }
-        actors.put(sessionId, actor);
-    }
-
-    Optional<ActorPrincipal> find(String sessionId) {
-        return Optional.ofNullable(sessionId).map(actors::get);
-    }
-
-    void remove(String sessionId) {
-        if (sessionId != null) {
-            actors.remove(sessionId);
         }
     }
 }

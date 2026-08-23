@@ -11,6 +11,8 @@ import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.auth.domain.ActorType;
 import com.minigame.platform.shared.config.SecurityConfig;
+import com.minigame.platform.shared.abuse.AbuseRateLimiter;
+import com.minigame.platform.shared.abuse.ClientFingerprintService;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -58,7 +60,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
                 "app.session.cookie-secure=false"
         }
 )
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, AbuseRateLimiter.class, ClientFingerprintService.class})
 class GuestAuthControllerTest {
     @Autowired
     MockMvc mockMvc;
@@ -180,7 +182,7 @@ class GuestAuthControllerTest {
                 "spring.security.oauth2.client.registration.google.client-secret=client-secret"
         }
 )
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, AbuseRateLimiter.class, ClientFingerprintService.class})
 class ConfiguredGoogleOAuthSuccessHandlerTest {
     private static final Map<String, Object> VALID_GOOGLE_ATTRIBUTES = Map.of(
             "sub", "google-subject",

@@ -4,6 +4,7 @@ import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.room.application.RoomApplicationService;
 import com.minigame.platform.room.domain.RoomCode;
 import com.minigame.platform.room.domain.RoomId;
+import com.minigame.platform.shared.abuse.ClientFingerprintService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -28,9 +29,11 @@ import static com.minigame.platform.room.adapter.in.web.RoomWebDtos.RoomSnapshot
 @RequestMapping("/api/v1/rooms")
 public class RoomController {
     private final RoomApplicationService rooms;
+    private final ClientFingerprintService clientFingerprints;
 
-    public RoomController(RoomApplicationService rooms) {
+    public RoomController(RoomApplicationService rooms, ClientFingerprintService clientFingerprints) {
         this.rooms = rooms;
+        this.clientFingerprints = clientFingerprints;
     }
 
     @PostMapping
@@ -58,7 +61,13 @@ public class RoomController {
             HttpServletRequest servletRequest
     ) {
         return RoomWebDtos.from(
-                rooms.join(actor, new RoomCode(code), request.password(), commandId(servletRequest))
+                rooms.join(
+                        actor,
+                        new RoomCode(code),
+                        request.password(),
+                        commandId(servletRequest),
+                        clientFingerprints.fingerprint(servletRequest)
+                )
         );
     }
 

@@ -1,6 +1,7 @@
 package com.minigame.platform.shared.error;
 
 import com.minigame.platform.room.domain.RoomRuleViolation;
+import com.minigame.platform.shared.abuse.AbuseLimitExceededException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import java.util.Map;
+import org.springframework.http.HttpHeaders;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -36,6 +38,20 @@ public class GlobalExceptionHandler {
         var status = ROOM_STATUSES.getOrDefault(exception.code(), HttpStatus.CONFLICT);
         var message = MESSAGES.getOrDefault(exception.code(), "방 요청을 처리할 수 없습니다.");
         return response(status, exception.code(), message, request);
+    }
+
+    @ExceptionHandler(AbuseLimitExceededException.class)
+    ResponseEntity<ApiError> abuseLimit(
+            AbuseLimitExceededException exception,
+            HttpServletRequest request
+    ) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(exception.retryAfterSeconds()))
+                .body(new ApiError(
+                        "RATE_LIMITED",
+                        "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+                        RequestIds.correlationId(request)
+                ));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

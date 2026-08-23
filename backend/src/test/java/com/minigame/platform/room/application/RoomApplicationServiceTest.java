@@ -16,12 +16,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -84,21 +86,17 @@ class RoomApplicationServiceTest {
     }
 
     @Test
-    void existingParticipantCanRejoinWithTheRoomPasswordWithoutMutatingOrRepublishing() {
+    void existingParticipantCanRejoinWithoutRepeatingPasswordVerificationOrMutation() {
         var repository = new InMemoryActiveRoomRepository();
         var publisher = new RecordingPublisher();
+        var encoder = new CountingPasswordEncoder();
         var service = new RoomApplicationService(
-                repository, new TestPasswordEncoder(), publisher, Clock.systemUTC()
+                repository, encoder, publisher, Clock.systemUTC()
         );
         var created = service.create(HOST, "재접속 비밀방", Visibility.PUBLIC, "1234", GameType.LIAR);
 
-        assertThatThrownBy(() -> service.join(
-                HOST, new RoomCode(created.code()), "wrong",
-                "00000000-0000-0000-0000-000000008010"
-        )).isInstanceOf(RoomRuleViolation.class).hasMessage("ROOM_PASSWORD_INVALID");
-
         var rejoined = service.join(
-                HOST, new RoomCode(created.code()), "1234",
+                HOST, new RoomCode(created.code()), "wrong",
                 "00000000-0000-0000-0000-000000008011"
         );
 
@@ -109,6 +107,66 @@ class RoomApplicationServiceTest {
                 .isEqualTo(HOST.actorId().value());
         assertThat(publisher.publicEvents).isEmpty();
         assertThat(publisher.lobbyEvents).hasSize(1);
+        assertThat(encoder.matchesCalls).hasValue(0);
+    }
+
+    @Test
+    void participantSnapshotContainsOnlyTheBoundedChatHistoryContract() {
+        var repository = new InMemoryActiveRoomRepository();
+        var chatPolicy = new ChatPolicy(Clock.systemUTC());
+        var service = new RoomApplicationService(
+                repository, new TestPasswordEncoder(), new RecordingPublisher(), Clock.systemUTC(), chatPolicy
+        );
+        var created = service.create(HOST, "대화 복구 방", Visibility.PRIVATE, "1234", GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        chatPolicy.accept(
+                roomId,
+                HOST,
+                "00000000-0000-0000-0000-000000008012",
+                "복구할 메시지",
+                message -> service.publishChat(
+                        HOST, roomId, "00000000-0000-0000-0000-000000008012", message
+                )
+        );
+
+        var snapshot = service.snapshot(HOST, roomId);
+
+        assertThat(snapshot.chats()).singleElement().satisfies(message -> {
+            assertThat(message.actorId()).isEqualTo(HOST.actorId().value());
+            assertThat(message.nickname()).isEqualTo(HOST.nickname());
+            assertThat(message.body()).isEqualTo("복구할 메시지");
+            assertThat(message.messageId()).isNotNull();
+            assertThat(message.sentAt()).isNotNull();
+        });
+    }
+
+    @Test
+    void passwordRateLimitRunsBeforeTheSecondExpensiveHashVerification() {
+        var repository = new InMemoryActiveRoomRepository();
+        var encoder = new CountingPasswordEncoder();
+        var limiter = new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                Clock.systemUTC(), 10, Duration.ofMinutes(1), 1, Duration.ofMinutes(1)
+        );
+        var service = new RoomApplicationService(
+                repository,
+                encoder,
+                new RecordingPublisher(),
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                limiter
+        );
+        var created = service.create(HOST, "비밀번호 비용 방", Visibility.PUBLIC, "1234", GameType.LIAR);
+
+        assertThatThrownBy(() -> service.join(
+                GUEST, new RoomCode(created.code()), "wrong",
+                "00000000-0000-0000-0000-000000008013", "network-a"
+        )).isInstanceOf(RoomRuleViolation.class).hasMessage("ROOM_PASSWORD_INVALID");
+        assertThatThrownBy(() -> service.join(
+                GUEST, new RoomCode(created.code()), "wrong",
+                "00000000-0000-0000-0000-000000008014", "network-a"
+        )).isInstanceOf(com.minigame.platform.shared.abuse.AbuseLimitExceededException.class);
+
+        assertThat(encoder.matchesCalls).hasValue(1);
     }
 
     @Test
@@ -223,6 +281,21 @@ class RoomApplicationServiceTest {
 
         @Override
         public boolean matches(CharSequence rawPassword, String encodedPassword) {
+            return encodedPassword.equals(encode(rawPassword));
+        }
+    }
+
+    private static final class CountingPasswordEncoder implements PasswordEncoder {
+        private final AtomicInteger matchesCalls = new AtomicInteger();
+
+        @Override
+        public String encode(CharSequence rawPassword) {
+            return "encoded:" + rawPassword;
+        }
+
+        @Override
+        public boolean matches(CharSequence rawPassword, String encodedPassword) {
+            matchesCalls.incrementAndGet();
             return encodedPassword.equals(encode(rawPassword));
         }
     }

@@ -8,7 +8,10 @@ import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepositor
 import com.minigame.platform.room.application.ActiveRoomRepository;
 import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.RoomApplicationService;
+import com.minigame.platform.room.domain.RoomId;
 import com.minigame.platform.shared.config.SecurityConfig;
+import com.minigame.platform.shared.abuse.AbuseRateLimiter;
+import com.minigame.platform.shared.abuse.ClientFingerprintService;
 import com.minigame.platform.shared.error.GlobalExceptionHandler;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import jakarta.servlet.http.Cookie;
@@ -41,6 +44,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 )
 @Import({
         SecurityConfig.class,
+        AbuseRateLimiter.class,
+        ClientFingerprintService.class,
         ChatPolicy.class,
         RoomApplicationService.class,
         InMemoryActiveRoomRepository.class,
@@ -55,6 +60,12 @@ class RoomControllerTest {
 
     @Autowired
     ActiveRoomRepository repository;
+
+    @Autowired
+    RoomApplicationService rooms;
+
+    @Autowired
+    ChatPolicy chatPolicy;
 
     @Autowired
     SessionTokenService tokenService;
@@ -129,6 +140,49 @@ class RoomControllerTest {
                         .cookie(session(HOST)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.participantCount").value(1));
+    }
+
+    @Test
+    void roomCreatorCanNavigateAndReloadAProtectedRoomWithoutResubmittingItsPassword() throws Exception {
+        var room = createRoom(HOST, "방장 재접속 방", "1234", "LIAR");
+
+        mockMvc.perform(postWithCsrf("/api/v1/rooms/{code}/join", HOST, room.code())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"password\":\"wrong\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.participantCount").value(1));
+
+        mockMvc.perform(get("/api/v1/rooms/{roomId}/snapshot", room.roomId())
+                        .cookie(session(HOST)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.passwordProtected").value(true));
+    }
+
+    @Test
+    void participantSnapshotReturnsOnlyAllowListedRecentChatFields() throws Exception {
+        var room = createRoom(HOST, "채팅 복구 API 방", "1234", "LIAR");
+        var roomId = new RoomId(UUID.fromString(room.roomId()));
+        chatPolicy.accept(
+                roomId,
+                HOST,
+                requestId("history-chat"),
+                "새로고침 후에도 보여요",
+                message -> rooms.publishChat(HOST, roomId, requestId("history-chat"), message)
+        );
+
+        mockMvc.perform(get("/api/v1/rooms/{roomId}/snapshot", room.roomId())
+                        .cookie(session(HOST)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.chats", hasSize(1)))
+                .andExpect(jsonPath("$.chats[0].messageId").isString())
+                .andExpect(jsonPath("$.chats[0].actorId").value(HOST.actorId().value()))
+                .andExpect(jsonPath("$.chats[0].nickname").value(HOST.nickname()))
+                .andExpect(jsonPath("$.chats[0].body").value("새로고침 후에도 보여요"))
+                .andExpect(jsonPath("$.chats[0].sentAt").isString())
+                .andExpect(jsonPath("$.chats[0].password").doesNotExist())
+                .andExpect(jsonPath("$.chats[0].passwordHash").doesNotExist())
+                .andExpect(jsonPath("$.password").doesNotExist())
+                .andExpect(jsonPath("$.passwordHash").doesNotExist());
     }
 
     @Test
@@ -237,6 +291,8 @@ class RoomControllerTest {
 )
 @Import({
         SecurityConfig.class,
+        AbuseRateLimiter.class,
+        ClientFingerprintService.class,
         ChatPolicy.class,
         RoomApplicationService.class,
         InMemoryActiveRoomRepository.class,

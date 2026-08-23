@@ -24,6 +24,7 @@ const snapshot: RoomSnapshot = {
   discussionSeconds: 90,
   categoryPack: 'all',
   participants: [{ actorId: hostId, nickname: '방장감자', ready: false, spectator: false }],
+  chats: [],
 }
 
 function event(sequence: number, type: string, payload: Record<string, unknown>): RoomEvent {
@@ -121,6 +122,53 @@ describe('roomStore', () => {
 
     expect(store.snapshot?.participants.map(participant => participant.nickname)).toEqual(['방장감자', '참가감자'])
     expect(store.snapshot?.sequence).toBe(2)
+  })
+
+  it('restores allow-listed chat history from the participant snapshot on reload', async () => {
+    const fake = realtimeFake()
+    const history = [{
+      messageId: 'history-1', actorId: guestId, nickname: '참가감자', body: '이전 대화',
+      sentAt: '2026-08-23T00:00:00Z',
+    }]
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json({ ...snapshot, chats: history, password: 'secret' })),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json({
+        ...snapshot, chats: history, passwordHash: 'argon-secret',
+      })),
+    )
+    const store = useRoomStore()
+
+    await store.join('123456', '', fake.realtime)
+
+    expect(store.chats).toEqual(history)
+    expect(store.snapshot).not.toHaveProperty('password')
+    expect(store.snapshot).not.toHaveProperty('passwordHash')
+  })
+
+  it('replaces stale chat state with gap recovery history and deduplicates later delivery by messageId', async () => {
+    const fake = realtimeFake()
+    let snapshots = 0
+    const first = { messageId: 'chat-1', actorId: hostId, nickname: '방장감자', body: '첫 대화', sentAt: '2026-08-23T00:00:00Z' }
+    const recovered = { messageId: 'chat-2', actorId: guestId, nickname: '참가감자', body: '복구 대화', sentAt: '2026-08-23T00:00:02Z' }
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json({ ...snapshot, chats: [first] })),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => {
+        snapshots += 1
+        return HttpResponse.json(snapshots === 1
+          ? { ...snapshot, chats: [first] }
+          : { ...snapshot, sequence: 4, chats: [recovered] })
+      }),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+
+    await fake.handlers.get(`/topic/rooms/${roomId}`)?.(event(4, 'CHAT_MESSAGE', recovered))
+    await fake.handlers.get(`/topic/rooms/${roomId}`)?.(event(5, 'CHAT_MESSAGE', recovered))
+
+    expect(snapshots).toBe(2)
+    expect(store.chats).toEqual([recovered])
   })
 
   it('recovers a skipped event and reloads again after reconnect subscriptions are restored', async () => {

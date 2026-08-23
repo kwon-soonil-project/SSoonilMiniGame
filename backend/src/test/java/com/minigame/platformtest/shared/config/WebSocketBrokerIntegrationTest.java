@@ -5,6 +5,8 @@ import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.application.ActiveRoomRepository;
+import com.minigame.platform.room.application.RoomApplicationService;
+import com.minigame.platform.room.application.RoomPresenceService;
 import com.minigame.platform.room.domain.GameType;
 import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomCode;
@@ -42,6 +44,7 @@ import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -53,6 +56,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import static org.mockito.Mockito.mock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -321,6 +326,23 @@ class WebSocketBrokerIntegrationTest {
             return SessionTokenService.hmac(
                     "0123456789abcdef0123456789abcdef".getBytes(StandardCharsets.UTF_8),
                     CLOCK
+            );
+        }
+
+        @Bean
+        ThreadPoolTaskScheduler roomDisconnectTaskScheduler() {
+            var scheduler = new ThreadPoolTaskScheduler();
+            scheduler.setDaemon(true);
+            scheduler.setThreadNamePrefix("broker-test-disconnect-");
+            return scheduler;
+        }
+
+        @Bean
+        RoomPresenceService roomPresenceService(ThreadPoolTaskScheduler scheduler) {
+            return new RoomPresenceService(
+                    mock(RoomApplicationService.class),
+                    scheduler,
+                    Duration.ofHours(1)
             );
         }
     }

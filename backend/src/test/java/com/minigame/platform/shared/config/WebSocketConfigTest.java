@@ -5,6 +5,8 @@ import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.domain.RoomFixture;
+import com.minigame.platform.room.application.RoomApplicationService;
+import com.minigame.platform.room.application.RoomPresenceService;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServletServerHttpRequest;
@@ -23,6 +25,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HashMap;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
+import static org.mockito.Mockito.mock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -105,14 +109,50 @@ class WebSocketConfigTest {
         )).isInstanceOf(AccessDeniedException.class);
     }
 
+    @Test
+    void stompConnectAndDisconnectDriveTheSharedPresenceRegistry() {
+        var repository = new InMemoryActiveRoomRepository();
+        var scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setDaemon(true);
+        scheduler.initialize();
+        try {
+            var presence = new RoomPresenceService(
+                    mock(RoomApplicationService.class), scheduler, Duration.ofHours(1)
+            );
+            var interceptor = new ActorMessageBoundaryInterceptor(repository, presence);
+
+            interceptor.preSend(stompMessage(
+                    org.springframework.messaging.simp.stomp.StompCommand.CONNECT, null, ACTOR, "session-1"
+            ), TestMessageChannel.INSTANCE);
+            assertThat(presence.find("session-1")).contains(ACTOR);
+
+            interceptor.preSend(stompMessage(
+                    org.springframework.messaging.simp.stomp.StompCommand.DISCONNECT, null, ACTOR, "session-1"
+            ), TestMessageChannel.INSTANCE);
+            assertThat(presence.find("session-1")).isEmpty();
+        } finally {
+            scheduler.shutdown();
+        }
+    }
+
     private static org.springframework.messaging.Message<byte[]> stompMessage(
             org.springframework.messaging.simp.stomp.StompCommand command,
             String destination,
             Principal principal
     ) {
+        return stompMessage(command, destination, principal, null);
+    }
+
+    private static org.springframework.messaging.Message<byte[]> stompMessage(
+            org.springframework.messaging.simp.stomp.StompCommand command,
+            String destination,
+            Principal principal,
+            String sessionId
+    ) {
         var accessor = org.springframework.messaging.simp.stomp.StompHeaderAccessor.create(command);
         accessor.setDestination(destination);
         accessor.setUser(principal);
+        if (sessionId != null) accessor.setSessionId(sessionId);
         accessor.setLeaveMutable(true);
         return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
     }

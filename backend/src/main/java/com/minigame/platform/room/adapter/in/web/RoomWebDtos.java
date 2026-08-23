@@ -11,6 +11,8 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.util.List;
+import java.time.Instant;
+import java.util.UUID;
 
 public final class RoomWebDtos {
     private RoomWebDtos() {
@@ -51,7 +53,17 @@ public final class RoomWebDtos {
             int actionSeconds,
             int discussionSeconds,
             String categoryPack,
-            List<ParticipantResponse> participants
+            List<ParticipantResponse> participants,
+            List<ChatMessageResponse> chats
+    ) {
+    }
+
+    public record ChatMessageResponse(
+            UUID messageId,
+            String actorId,
+            String nickname,
+            String body,
+            Instant sentAt
     ) {
     }
 
@@ -86,7 +98,14 @@ public final class RoomWebDtos {
                 view.actionSeconds(),
                 view.discussionSeconds(),
                 view.categoryPack(),
-                view.participants().stream().map(RoomWebDtos::from).toList()
+                view.participants().stream().map(RoomWebDtos::from).toList(),
+                view.chats().stream().map(message -> new ChatMessageResponse(
+                        message.messageId(),
+                        message.actorId(),
+                        message.nickname(),
+                        message.body(),
+                        message.sentAt()
+                )).toList()
         );
     }
 

@@ -20,3 +20,16 @@ export async function createPublicRoom(page: Page, title: string): Promise<strin
   await expect(page.getByRole('status')).toContainText('실시간 연결됨')
   return page.url().split('/').at(-1) as string
 }
+
+export async function createPrivateRoom(page: Page, title: string, password: string): Promise<string> {
+  await page.getByRole('button', { name: '방 만들기', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: '방 만들기' })
+  await dialog.getByLabel('방 제목').fill(title)
+  await dialog.getByLabel('첫 게임').selectOption('LIAR')
+  await dialog.getByLabel('공개 로비에 표시').uncheck()
+  await dialog.getByLabel('비밀번호 사용').check()
+  await dialog.getByLabel('비밀번호').fill(password)
+  await dialog.getByRole('button', { name: '방 만들기', exact: true }).click()
+  await expect(page).toHaveURL(/\/rooms\/\d{6}$/)
+  return page.url().split('/').at(-1) as string
+}

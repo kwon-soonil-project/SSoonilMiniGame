@@ -13,6 +13,7 @@ import com.minigame.platform.room.domain.RoomStatus;
 import com.minigame.platform.room.domain.Visibility;
 import com.minigame.platform.shared.realtime.EventEnvelope;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
+import com.minigame.platform.shared.abuse.AbuseRateLimiter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -43,6 +44,7 @@ public class RoomApplicationService {
     private final RoomEventPublisher eventPublisher;
     private final Clock clock;
     private final ChatPolicy chatPolicy;
+    private final AbuseRateLimiter abuseLimiter;
     private final Map<RoomId, String> passwordHashes = new ConcurrentHashMap<>();
     private final Map<RoomId, Object> lobbyPublicationLocks = new ConcurrentHashMap<>();
     private final Map<RoomId, Long> lobbyPublishedSequences = new ConcurrentHashMap<>();
@@ -55,14 +57,16 @@ public class RoomApplicationService {
             ActiveRoomRepository repository,
             RoomEventPublisher eventPublisher,
             Clock clock,
-            ChatPolicy chatPolicy
+            ChatPolicy chatPolicy,
+            AbuseRateLimiter abuseLimiter
     ) {
         this(
                 repository,
                 Argon2PasswordEncoder.defaultsForSpringSecurity_v5_8(),
                 eventPublisher,
                 clock,
-                chatPolicy
+                chatPolicy,
+                abuseLimiter
         );
     }
 
@@ -72,7 +76,8 @@ public class RoomApplicationService {
                 passwordEncoder,
                 RoomEventPublisher.noOp(),
                 Clock.systemUTC(),
-                new ChatPolicy(Clock.systemUTC())
+                new ChatPolicy(Clock.systemUTC()),
+                unlimitedAbuseLimiter()
         );
     }
 
@@ -82,7 +87,7 @@ public class RoomApplicationService {
             RoomEventPublisher eventPublisher,
             Clock clock
     ) {
-        this(repository, passwordEncoder, eventPublisher, clock, new ChatPolicy(clock));
+        this(repository, passwordEncoder, eventPublisher, clock, new ChatPolicy(clock), unlimitedAbuseLimiter());
     }
 
     public RoomApplicationService(
@@ -92,11 +97,23 @@ public class RoomApplicationService {
             Clock clock,
             ChatPolicy chatPolicy
     ) {
+        this(repository, passwordEncoder, eventPublisher, clock, chatPolicy, unlimitedAbuseLimiter());
+    }
+
+    public RoomApplicationService(
+            ActiveRoomRepository repository,
+            PasswordEncoder passwordEncoder,
+            RoomEventPublisher eventPublisher,
+            Clock clock,
+            ChatPolicy chatPolicy,
+            AbuseRateLimiter abuseLimiter
+    ) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.passwordEncoder = Objects.requireNonNull(passwordEncoder, "passwordEncoder");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.chatPolicy = Objects.requireNonNull(chatPolicy, "chatPolicy");
+        this.abuseLimiter = Objects.requireNonNull(abuseLimiter, "abuseLimiter");
     }
 
     public RoomSnapshotView create(
@@ -222,22 +239,56 @@ public class RoomApplicationService {
             String password,
             String requestId
     ) {
+        return join(actor, code, password, requestId, "internal-client");
+    }
+
+    public RoomSnapshotView join(
+            ActorPrincipal actor,
+            RoomCode code,
+            String password,
+            String requestId,
+            String clientFingerprint
+    ) {
         Objects.requireNonNull(actor, "actor");
         var discovered = repository.findByCode(code).orElseThrow(() -> violation("ROOM_NOT_FOUND"));
-        verifyPassword(discovered.id(), password);
-        if (discovered.participants().stream()
-                .anyMatch(participant -> participant.actorId().equals(actor.actorId()))) {
-            return snapshotView(discovered);
-        }
         var result = repository.withRoom(discovered.id(), room -> {
+            var current = room.snapshot();
+            if (current.participants().stream()
+                    .anyMatch(participant -> participant.actorId().equals(actor.actorId()))) {
+                return List.of();
+            }
+            if (passwordHashes.containsKey(current.id())) {
+                abuseLimiter.checkPassword(actor.actorId(), current.id(), clientFingerprint);
+                verifyPassword(current.id(), password);
+                abuseLimiter.passwordSucceeded(actor.actorId(), current.id(), clientFingerprint);
+            }
             var events = room.join(actor.actorId(), actor.nickname(), false, requestId);
-            publishRoomEvents(discovered.id(), actor, requestId, events);
+            publishRoomEvents(current.id(), actor, requestId, events);
             if (!events.isEmpty()) {
                 publishLobbyUpsert(room.snapshot(), actor, requestId);
             }
             return events;
         });
         return snapshotView(result.snapshot());
+    }
+
+    public void leaveJoinedRooms(ActorPrincipal actor) {
+        Objects.requireNonNull(actor, "actor");
+        var joinedRooms = repository.findAll().stream()
+                .filter(room -> room.participants().stream()
+                        .anyMatch(participant -> participant.actorId().equals(actor.actorId())))
+                .map(Room.Snapshot::id)
+                .toList();
+        for (var roomId : joinedRooms) {
+            try {
+                leave(actor, roomId, UUID.randomUUID().toString());
+            } catch (RoomRuleViolation exception) {
+                if (!"ROOM_NOT_FOUND".equals(exception.code())
+                        && !"ROOM_PARTICIPANT_NOT_FOUND".equals(exception.code())) {
+                    throw exception;
+                }
+            }
+        }
     }
 
     public RoomSnapshotView snapshot(ActorPrincipal actor, RoomId roomId) {
@@ -389,7 +440,8 @@ public class RoomApplicationService {
                 room.settings().actionSeconds(),
                 room.settings().discussionSeconds(),
                 room.settings().categoryPack(),
-                participants
+                participants,
+                chatPolicy.history(room.id())
         );
     }
 
@@ -581,7 +633,8 @@ public class RoomApplicationService {
             int actionSeconds,
             int discussionSeconds,
             String categoryPack,
-            List<ParticipantView> participants
+            List<ParticipantView> participants,
+            List<ChatPolicy.ChatMessage> chats
     ) {
     }
 
@@ -600,5 +653,15 @@ public class RoomApplicationService {
     }
 
     private record CreateRequestKey(String actorId, UUID requestId) {
+    }
+
+    private static AbuseRateLimiter unlimitedAbuseLimiter() {
+        return new AbuseRateLimiter(
+                Clock.systemUTC(),
+                Integer.MAX_VALUE,
+                java.time.Duration.ofDays(365),
+                Integer.MAX_VALUE,
+                java.time.Duration.ofDays(365)
+        );
     }
 }

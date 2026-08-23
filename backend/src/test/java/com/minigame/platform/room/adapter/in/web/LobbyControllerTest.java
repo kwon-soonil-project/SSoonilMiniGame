@@ -15,6 +15,7 @@ import com.minigame.platform.room.domain.Visibility;
 import com.minigame.platform.shared.error.GlobalExceptionHandler;
 import com.minigame.platform.shared.config.SecurityConfig;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
+import com.minigame.platform.shared.abuse.AbuseRateLimiter;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 )
 @Import({
         SecurityConfig.class,
+        AbuseRateLimiter.class,
         ChatPolicy.class,
         RoomApplicationService.class,
         InMemoryActiveRoomRepository.class,

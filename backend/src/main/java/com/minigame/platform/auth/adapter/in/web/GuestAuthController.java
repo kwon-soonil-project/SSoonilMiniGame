@@ -4,6 +4,8 @@ import com.minigame.platform.auth.application.SessionTokenService;
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
 import com.minigame.platform.auth.domain.ActorType;
+import com.minigame.platform.shared.abuse.AbuseRateLimiter;
+import com.minigame.platform.shared.abuse.ClientFingerprintService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -28,13 +30,19 @@ public final class GuestAuthController {
 
     private final SessionTokenService tokenService;
     private final boolean secureCookie;
+    private final AbuseRateLimiter abuseLimiter;
+    private final ClientFingerprintService clientFingerprints;
 
     public GuestAuthController(
             SessionTokenService tokenService,
-            @Value("${app.session.cookie-secure:false}") boolean secureCookie
+            @Value("${app.session.cookie-secure:false}") boolean secureCookie,
+            AbuseRateLimiter abuseLimiter,
+            ClientFingerprintService clientFingerprints
     ) {
         this.tokenService = tokenService;
         this.secureCookie = secureCookie;
+        this.abuseLimiter = abuseLimiter;
+        this.clientFingerprints = clientFingerprints;
     }
 
     @PostMapping("/guest")
@@ -42,6 +50,7 @@ public final class GuestAuthController {
             @RequestBody GuestRequest request,
             HttpServletRequest servletRequest
     ) {
+        abuseLimiter.checkGuest(clientFingerprints.fingerprint(servletRequest));
         try {
             var principal = ActorPrincipal.guest(
                     new ActorId("guest:" + UUID.randomUUID()),

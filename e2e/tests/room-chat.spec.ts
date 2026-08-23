@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { createPublicRoom, joinAsGuest } from './helpers'
+import { createPrivateRoom, createPublicRoom, joinAsGuest } from './helpers'
 
 test('two guests discover a public room, ready up, chat, and recover after reload', async ({ browser }) => {
   const host = await browser.newContext()
@@ -39,4 +39,15 @@ test('two guests discover a public room, ready up, chat, and recover after reloa
     await host.close()
     await guest.close()
   }
+})
+
+test('a private-room host navigates and reloads without re-entering the password', async ({ page }) => {
+  await joinAsGuest(page, '비밀방장')
+  const code = await createPrivateRoom(page, '초대 전용 방', '1234')
+
+  await expect(page).toHaveURL(new RegExp(`/rooms/${code}$`))
+  await expect(page.getByRole('status')).toContainText('실시간 연결됨')
+  await page.reload()
+  await expect(page.getByRole('status')).toContainText('실시간 연결됨')
+  await expect(page.getByText('이 방에 입장하려면 비밀번호가 필요해요.')).not.toBeVisible()
 })
