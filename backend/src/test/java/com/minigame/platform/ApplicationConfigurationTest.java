@@ -8,6 +8,7 @@ import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.io.ClassPathResource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class ApplicationConfigurationTest {
     private final WebApplicationContextRunner application = new WebApplicationContextRunner()
@@ -48,5 +49,11 @@ class ApplicationConfigurationTest {
     void localProfileProvidesAnExplicitDevelopmentSessionSecret() {
         application.withPropertyValues("spring.profiles.active=local")
                 .run(context -> assertThat(context).hasSingleBean(SessionTokenService.class));
+    }
+
+    @Test
+    void packagesTheCloudSqlPostgresSocketFactoryForRuntimeConnections() {
+        assertThatCode(() -> Class.forName("com.google.cloud.sql.postgres.SocketFactory"))
+                .doesNotThrowAnyException();
     }
 }

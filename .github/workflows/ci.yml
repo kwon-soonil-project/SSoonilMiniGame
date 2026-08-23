@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -113,11 +114,36 @@ jobs:
         run: docker compose down --volumes
 
   preview-contract:
-    name: preview-delivery-contract
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: preview-cloud-run-deployment
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     needs: container-e2e
     runs-on: ubuntu-latest
     environment: preview
+    concurrency:
+      group: cloud-run-preview
+      cancel-in-progress: true
+    outputs:
+      image_digest: ${{ steps.deploy.outputs.image_digest }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      APP_ALLOWED_ORIGINS: ${{ vars.APP_ALLOWED_ORIGINS }}
+      APP_IMAGE: minigame:${{ github.sha }}
+      APP_SESSION_SECRET_NAME: ${{ vars.APP_SESSION_SECRET_NAME }}
+      CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+      CLOUD_RUN_SERVICE: minigame-preview
+      CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}
+      DB_NAME: ${{ vars.DB_NAME }}
+      DB_PASSWORD_SECRET_NAME: ${{ vars.DB_PASSWORD_SECRET_NAME }}
+      DB_USER: ${{ vars.DB_USER }}
+      GCP_ARTIFACT_IMAGE: minigame
+      GCP_ARTIFACT_REPOSITORY: minigame
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: asia-northeast3
+      IP_HASH_SECRET_NAME: ${{ vars.IP_HASH_SECRET_NAME }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -126,14 +152,55 @@ jobs:
           path: delivery
       - name: Verify preview uses the tested image artifact
         run: bash .github/scripts/verify-delivery-candidate.sh delivery
-      - name: Record verified preview candidate
-        run: echo "preview candidate=${GITHUB_SHA} (Cloud Run deployment hook intentionally not enabled yet)"
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+      - name: Deploy verified preview image
+        id: deploy
+        run: bash .github/scripts/deploy-cloud-run.sh
+      - name: Verify preview readiness
+        shell: bash
+        run: |
+          service_url="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format='value(status.url)')"
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+            "${service_url}/actuator/health/readiness"
 
   production-contract:
-    name: production-delivery-contract
+    name: production-cloud-run-deployment
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: preview-contract
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: cloud-run-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      APP_ALLOWED_ORIGINS: ${{ vars.APP_ALLOWED_ORIGINS }}
+      APP_IMAGE: minigame:${{ github.sha }}
+      APP_SESSION_SECRET_NAME: ${{ vars.APP_SESSION_SECRET_NAME }}
+      CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+      CLOUD_RUN_SERVICE: minigame
+      CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}
+      DB_NAME: ${{ vars.DB_NAME }}
+      DB_PASSWORD_SECRET_NAME: ${{ vars.DB_PASSWORD_SECRET_NAME }}
+      DB_USER: ${{ vars.DB_USER }}
+      EXPECTED_IMAGE_DIGEST: ${{ needs.preview-contract.outputs.image_digest }}
+      GCP_ARTIFACT_IMAGE: minigame
+      GCP_ARTIFACT_REPOSITORY: minigame
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: asia-northeast3
+      IP_HASH_SECRET_NAME: ${{ vars.IP_HASH_SECRET_NAME }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -142,5 +209,22 @@ jobs:
           path: delivery
       - name: Verify production uses the previewed image artifact
         run: bash .github/scripts/verify-delivery-candidate.sh delivery
-      - name: Record approved production candidate
-        run: echo "production candidate=${GITHUB_SHA} (configure required reviewers on the production environment)"
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+      - name: Deploy approved production image
+        run: bash .github/scripts/deploy-cloud-run.sh
+      - name: Verify production readiness
+        shell: bash
+        run: |
+          service_url="$(gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --region="${GCP_REGION}" \
+            --format='value(status.url)')"
+          curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors \
+            "${service_url}/actuator/health/readiness"
