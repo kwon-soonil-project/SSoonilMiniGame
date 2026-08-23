@@ -623,9 +623,9 @@ AWS로 이전할 경우 동일한 애플리케이션 이미지를 ECS/Fargate에
 - GitHub Free 비공개 저장소에는 Required reviewer가 제공되지 않아 현재 게이트는 별도 승인자가 아닌 수동 실행이다. 저장소 공개 또는 지원 플랜 전환 시 `production` Required reviewer를 추가한다.
 - 프리뷰 concurrency는 이전 실행을 취소하고, 운영 concurrency는 실행을 직렬화한다. Cloud SQL Connector는 CPU throttling 서버리스 환경에 권장되는 lazy refresh를 사용한다.
 - Windows 체크아웃에서 `backend/gradlew`가 CRLF로 변환되어 Linux 이미지 빌드가 실패하는 문제를 재현했다. `.gitattributes`와 계약 테스트로 POSIX 진입점의 LF를 고정한 뒤 동일 Docker 빌드가 성공했다.
-- 검증 결과: 백엔드 전체 테스트 성공, 프론트엔드 `11`개 파일 `67`개 테스트 및 프로덕션 빌드 성공, 배포 계약 `5`개 성공, 컨테이너 기반 두 브라우저 방·채팅 E2E `2`개 성공.
-- Cloud Run·Artifact Registry·Cloud SQL Admin·Secret Manager·IAM Credentials·STS API를 활성화했다. Artifact Registry `minigame`, Cloud SQL `minigame-db`, 세 비밀값, 런타임·배포 서비스 계정, 저장소 subject로 제한한 Workload Identity Federation provider를 구성했다. 장기 서비스 계정 키는 만들지 않았다.
-- 같은 Cloud SQL 인스턴스 안에 운영 `minigame`/`minigame_app`과 프리뷰 `minigame_preview`/`minigame_preview_app`을 분리하고 각 비밀번호를 별도 Secret Manager 비밀로 저장했다. 프리뷰 GitHub 환경 변수 전환은 GitHub 보안 재인증 뒤 완료한다.
+- 검증 결과: 백엔드 전체 테스트 성공, 프론트엔드 `11`개 파일 `67`개 테스트 및 프로덕션 빌드 성공, 배포 계약 `6`개 성공, 컨테이너 기반 두 브라우저 방·채팅 E2E `2`개 성공.
+- Cloud Run·Artifact Registry·Cloud SQL Admin·Secret Manager·IAM Credentials·STS API를 활성화했다. Artifact Registry `minigame`, Cloud SQL `minigame-db`, 네 비밀값, 런타임·배포 서비스 계정, 저장소 subject로 제한한 Workload Identity Federation provider를 구성했다. 장기 서비스 계정 키는 만들지 않았다.
+- 같은 Cloud SQL 인스턴스 안에 운영 `minigame`/`minigame_app`과 프리뷰 `minigame_preview`/`minigame_preview_app`을 분리하고 각 비밀번호를 별도 Secret Manager 비밀로 저장했다. 운영 값은 GitHub `production` 환경 변수로 관리하고, 고정된 프리뷰 DB·사용자·Secret 이름은 배포 workflow에 명시해 운영 값과의 혼용을 막는다.
 
 #### 도구 호환성 기록
 
