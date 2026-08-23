@@ -11,7 +11,7 @@ spring:
     enabled: true
 app:
   session:
-    secret: ${APP_SESSION_SECRET:local-development-session-key-at-least-32-bytes}
+    secret: ${APP_SESSION_SECRET}
     cookie-secure: ${APP_SESSION_SECURE:false}
 server:
   port: ${PORT:8080}

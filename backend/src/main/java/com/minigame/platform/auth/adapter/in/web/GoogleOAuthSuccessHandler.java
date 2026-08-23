@@ -10,6 +10,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.web.authentication.AuthenticationSuccessHandler;
 
@@ -44,11 +48,12 @@ public final class GoogleOAuthSuccessHandler implements AuthenticationSuccessHan
             HttpServletResponse response,
             Authentication authentication
     ) throws IOException, ServletException {
-        var oauthUser = (OAuth2User) authentication.getPrincipal();
-        var googleSubject = requiredAttribute(oauthUser, "sub");
-        var email = requiredAttribute(oauthUser, "email");
-        var nickname = safeNickname(oauthUser.getAttribute("name"));
-        var avatarUrl = optionalAttribute(oauthUser, "picture");
+        var googleAuthentication = requireGoogleAuthentication(authentication);
+        var oauthUser = googleAuthentication.getPrincipal();
+        var googleSubject = requiredStringAttribute(oauthUser, "sub");
+        var email = requiredStringAttribute(oauthUser, "email");
+        var nickname = safeNickname(optionalStringAttribute(oauthUser, "name"));
+        var avatarUrl = optionalStringAttribute(oauthUser, "picture");
         var now = clock.instant();
 
         var member = memberRepository.findByGoogleSubject(googleSubject)
@@ -78,27 +83,54 @@ public final class GoogleOAuthSuccessHandler implements AuthenticationSuccessHan
                 secureCookie || request.isSecure()
         );
         response.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+        var oauthSession = request.getSession(false);
+        if (oauthSession != null) {
+            oauthSession.invalidate();
+        }
+        SecurityContextHolder.clearContext();
         response.sendRedirect("/lobby");
     }
 
-    private static String requiredAttribute(OAuth2User user, String name) {
-        var value = optionalAttribute(user, name);
-        if (value == null || value.isBlank()) {
-            throw new IllegalArgumentException("Missing Google profile attribute: " + name);
+    private static OAuth2AuthenticationToken requireGoogleAuthentication(Authentication authentication) {
+        if (!(authentication instanceof OAuth2AuthenticationToken oauthAuthentication)
+                || !"google".equals(oauthAuthentication.getAuthorizedClientRegistrationId())) {
+            throw invalidGoogleIdentity("Unexpected OAuth registration");
         }
-        return value;
+        return oauthAuthentication;
     }
 
-    private static String optionalAttribute(OAuth2User user, String name) {
+    private static String requiredStringAttribute(OAuth2User user, String name) {
         Object value = user.getAttribute(name);
-        return value == null ? null : value.toString();
+        if (!(value instanceof String stringValue) || stringValue.isBlank()) {
+            throw invalidGoogleIdentity("Invalid Google profile attribute: " + name);
+        }
+        return stringValue.strip();
     }
 
-    private static String safeNickname(Object rawName) {
+    private static String optionalStringAttribute(OAuth2User user, String name) {
+        Object value = user.getAttribute(name);
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof String stringValue)) {
+            throw invalidGoogleIdentity("Invalid Google profile attribute: " + name);
+        }
+        var normalized = stringValue.strip();
+        return normalized.isEmpty() ? null : normalized;
+    }
+
+    private static OAuth2AuthenticationException invalidGoogleIdentity(String description) {
+        return new OAuth2AuthenticationException(
+                new OAuth2Error("invalid_user_info_response"),
+                description
+        );
+    }
+
+    private static String safeNickname(String rawName) {
         if (rawName == null) {
             return "회원";
         }
-        var withoutControls = rawName.toString().codePoints()
+        var withoutControls = rawName.codePoints()
                 .filter(codePoint -> !Character.isISOControl(codePoint))
                 .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
                 .toString()

@@ -4,12 +4,14 @@ import com.minigame.platform.auth.adapter.in.web.GoogleOAuthSuccessHandler;
 import com.minigame.platform.auth.adapter.in.web.SessionCookieAuthenticationFilter;
 import com.minigame.platform.auth.adapter.out.persistence.MemberRepository;
 import com.minigame.platform.auth.application.SessionTokenService;
+import com.minigame.platform.auth.domain.ActorPrincipal;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authorization.AuthorizationDecision;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -72,7 +74,11 @@ public class SecurityConfig {
                                 "/oauth2/**",
                                 "/login/oauth2/**"
                         ).permitAll()
-                        .anyRequest().authenticated()
+                        .anyRequest().access((authentication, context) -> new AuthorizationDecision(
+                                authentication.get().isAuthenticated()
+                                        && authentication.get().getPrincipal()
+                                        instanceof ActorPrincipal
+                        ))
                 )
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))

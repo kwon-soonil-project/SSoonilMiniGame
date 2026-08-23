@@ -29,9 +29,8 @@ public final class SessionCookieAuthenticationFilter extends OncePerRequestFilte
             HttpServletResponse response,
             FilterChain filterChain
     ) throws ServletException, IOException {
-        if (SecurityContextHolder.getContext().getAuthentication() == null) {
-            findSessionCookie(request).ifPresent(token -> authenticate(token));
-        }
+        findSessionCookie(request)
+                .ifPresentOrElse(this::authenticate, SecurityContextHolder::clearContext);
         filterChain.doFilter(request, response);
     }
 

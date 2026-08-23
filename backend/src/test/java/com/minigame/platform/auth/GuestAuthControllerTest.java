@@ -18,24 +18,30 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
-import org.springframework.mock.web.MockFilterChain;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.core.user.DefaultOAuth2User;
+import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -164,11 +170,21 @@ class GuestAuthControllerTest {
 )
 @Import(SecurityConfig.class)
 class ConfiguredGoogleOAuthSuccessHandlerTest {
+    private static final Map<String, Object> VALID_GOOGLE_ATTRIBUTES = Map.of(
+            "sub", "google-subject",
+            "email", "potato@example.com",
+            "name", "감자왕",
+            "picture", "https://example.com/avatar.png"
+    );
+
     @Autowired
     GoogleOAuthSuccessHandler successHandler;
 
     @Autowired
     SessionTokenService tokenService;
+
+    @Autowired
+    MockMvc mockMvc;
 
     @MockitoBean
     MemberRepository memberRepository;
@@ -177,20 +193,7 @@ class ConfiguredGoogleOAuthSuccessHandlerTest {
     void upsertsMemberAndIssuesSevenDayApplicationSession() throws Exception {
         when(memberRepository.findByGoogleSubject("google-subject")).thenReturn(Optional.empty());
         when(memberRepository.save(any(MemberEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        var authentication = new OAuth2AuthenticationToken(
-                new DefaultOAuth2User(
-                        java.util.List.of(),
-                        Map.of(
-                                "sub", "google-subject",
-                                "email", "potato@example.com",
-                                "name", "감자왕",
-                                "picture", "https://example.com/avatar.png"
-                        ),
-                        "sub"
-                ),
-                java.util.List.of(),
-                "google"
-        );
+        var authentication = oauthAuthentication("google", VALID_GOOGLE_ATTRIBUTES);
         var response = new MockHttpServletResponse();
 
         successHandler.onAuthenticationSuccess(new MockHttpServletRequest(), response, authentication);
@@ -212,5 +215,129 @@ class ConfiguredGoogleOAuthSuccessHandlerTest {
         assertThat(savedMember.getValue().getEmail()).isEqualTo("potato@example.com");
         assertThat(savedMember.getValue().getStatus()).isEqualTo("ACTIVE");
         assertThat(savedMember.getValue().getCreatedAt()).isBeforeOrEqualTo(Instant.now());
+    }
+
+    @Test
+    void oauthAuthenticationAloneCannotAccessCurrentActor() throws Exception {
+        var authentication = oauthAuthentication("google", VALID_GOOGLE_ATTRIBUTES);
+
+        mockMvc.perform(get("/api/v1/me").session(oauthSession(authentication)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void applicationCookieReplacesOAuthAuthentication() throws Exception {
+        var applicationToken = tokenService.issue(
+                ActorPrincipal.guest(new ActorId("guest-1"), "감자왕"),
+                Duration.ofHours(12)
+        );
+        var authentication = oauthAuthentication("google", VALID_GOOGLE_ATTRIBUTES);
+
+        mockMvc.perform(get("/api/v1/me")
+                        .session(oauthSession(authentication))
+                        .cookie(new Cookie("APP_SESSION", applicationToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.actorId").value("guest-1"))
+                .andExpect(jsonPath("$.actorType").value("GUEST"));
+    }
+
+    @Test
+    void invalidatesOAuthSessionAndSecurityContextAfterIssuingApplicationSession() throws Exception {
+        when(memberRepository.findByGoogleSubject("google-subject")).thenReturn(Optional.empty());
+        when(memberRepository.save(any(MemberEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        var authentication = oauthAuthentication("google", VALID_GOOGLE_ATTRIBUTES);
+        var request = new MockHttpServletRequest();
+        var session = oauthSession(authentication);
+        request.setSession(session);
+        var securityContext = SecurityContextHolder.createEmptyContext();
+        securityContext.setAuthentication(authentication);
+        SecurityContextHolder.setContext(securityContext);
+
+        try {
+            successHandler.onAuthenticationSuccess(request, new MockHttpServletResponse(), authentication);
+
+            assertThatThrownBy(session::getCreationTime).isInstanceOf(IllegalStateException.class);
+            assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void rejectsAuthenticationFromANonGoogleRegistrationBeforeMemberLookup() {
+        var authentication = oauthAuthentication("other-provider", VALID_GOOGLE_ATTRIBUTES);
+
+        assertThatThrownBy(() -> successHandler.onAuthenticationSuccess(
+                new MockHttpServletRequest(),
+                new MockHttpServletResponse(),
+                authentication
+        )).isInstanceOf(OAuth2AuthenticationException.class);
+        verifyNoInteractions(memberRepository);
+    }
+
+    @Test
+    void rejectsNonStringRequiredClaimBeforeMemberLookup() {
+        var attributes = new HashMap<>(VALID_GOOGLE_ATTRIBUTES);
+        attributes.put("sub", 42);
+        var authentication = oauthAuthentication("google", attributes);
+
+        assertThatThrownBy(() -> successHandler.onAuthenticationSuccess(
+                new MockHttpServletRequest(),
+                new MockHttpServletResponse(),
+                authentication
+        )).isInstanceOf(OAuth2AuthenticationException.class);
+        verifyNoInteractions(memberRepository);
+    }
+
+    @Test
+    void rejectsMissingRequiredClaimBeforeMemberLookup() {
+        var attributes = new HashMap<>(VALID_GOOGLE_ATTRIBUTES);
+        attributes.remove("email");
+        var authentication = oauthAuthentication("google", attributes);
+
+        assertThatThrownBy(() -> successHandler.onAuthenticationSuccess(
+                new MockHttpServletRequest(),
+                new MockHttpServletResponse(),
+                authentication
+        )).isInstanceOf(OAuth2AuthenticationException.class);
+        verifyNoInteractions(memberRepository);
+    }
+
+    @Test
+    void rejectsBlankRequiredClaimBeforeMemberLookup() {
+        var attributes = new HashMap<>(VALID_GOOGLE_ATTRIBUTES);
+        attributes.put("email", "   ");
+        var authentication = oauthAuthentication("google", attributes);
+
+        assertThatThrownBy(() -> successHandler.onAuthenticationSuccess(
+                new MockHttpServletRequest(),
+                new MockHttpServletResponse(),
+                authentication
+        )).isInstanceOf(OAuth2AuthenticationException.class);
+        verifyNoInteractions(memberRepository);
+    }
+
+    private static OAuth2AuthenticationToken oauthAuthentication(
+            String registrationId,
+            Map<String, Object> attributes
+    ) {
+        return new OAuth2AuthenticationToken(
+                new DefaultOAuth2User(java.util.List.of(), attributes, "sub"),
+                java.util.List.of(),
+                registrationId
+        );
+    }
+
+    private static MockHttpSession oauthSession(
+            OAuth2AuthenticationToken authentication
+    ) {
+        var securityContext = SecurityContextHolder.createEmptyContext();
+        securityContext.setAuthentication(authentication);
+        var session = new MockHttpSession();
+        session.setAttribute(
+                HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY,
+                securityContext
+        );
+        return session;
     }
 }
