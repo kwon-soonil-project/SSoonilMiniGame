@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '../features/auth/HomeView.vue'
 import { useAuthStore } from '../features/auth/authStore'
 import LobbyView from '../features/lobby/LobbyView.vue'
+import RoomView from '../features/room/RoomView.vue'
 
 export function createAppRouter(pinia: Pinia) {
   const router = createRouter({
@@ -10,6 +11,7 @@ export function createAppRouter(pinia: Pinia) {
     routes: [
       { path: '/', name: 'home', component: HomeView },
       { path: '/lobby', name: 'lobby', component: LobbyView, meta: { requiresAuth: true } },
+      { path: '/rooms/:code', name: 'room', component: RoomView, props: true, meta: { requiresAuth: true } },
     ],
   })
 

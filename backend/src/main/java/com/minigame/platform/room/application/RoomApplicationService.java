@@ -225,6 +225,10 @@ public class RoomApplicationService {
         Objects.requireNonNull(actor, "actor");
         var discovered = repository.findByCode(code).orElseThrow(() -> violation("ROOM_NOT_FOUND"));
         verifyPassword(discovered.id(), password);
+        if (discovered.participants().stream()
+                .anyMatch(participant -> participant.actorId().equals(actor.actorId()))) {
+            return snapshotView(discovered);
+        }
         var result = repository.withRoom(discovered.id(), room -> {
             var events = room.join(actor.actorId(), actor.nickname(), false, requestId);
             publishRoomEvents(discovered.id(), actor, requestId, events);

@@ -8,10 +8,15 @@ import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomCode;
 import com.minigame.platform.room.domain.RoomEvent;
 import com.minigame.platform.room.domain.RoomId;
+import com.minigame.platform.room.domain.RoomRuleViolation;
 import com.minigame.platform.room.domain.Visibility;
+import com.minigame.platform.shared.realtime.EventEnvelope;
+import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.Clock;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -76,6 +81,34 @@ class RoomApplicationServiceTest {
 
         assertThat(joined.participantCount()).isEqualTo(2);
         assertThat(repository.findById(new RoomId(java.util.UUID.fromString(created.roomId())))).isEmpty();
+    }
+
+    @Test
+    void existingParticipantCanRejoinWithTheRoomPasswordWithoutMutatingOrRepublishing() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var service = new RoomApplicationService(
+                repository, new TestPasswordEncoder(), publisher, Clock.systemUTC()
+        );
+        var created = service.create(HOST, "재접속 비밀방", Visibility.PUBLIC, "1234", GameType.LIAR);
+
+        assertThatThrownBy(() -> service.join(
+                HOST, new RoomCode(created.code()), "wrong",
+                "00000000-0000-0000-0000-000000008010"
+        )).isInstanceOf(RoomRuleViolation.class).hasMessage("ROOM_PASSWORD_INVALID");
+
+        var rejoined = service.join(
+                HOST, new RoomCode(created.code()), "1234",
+                "00000000-0000-0000-0000-000000008011"
+        );
+
+        assertThat(rejoined.sequence()).isZero();
+        assertThat(rejoined.participantCount()).isEqualTo(1);
+        assertThat(rejoined.participants()).singleElement()
+                .extracting(RoomApplicationService.ParticipantView::actorId)
+                .isEqualTo(HOST.actorId().value());
+        assertThat(publisher.publicEvents).isEmpty();
+        assertThat(publisher.lobbyEvents).hasSize(1);
     }
 
     @Test
@@ -191,6 +224,25 @@ class RoomApplicationServiceTest {
         @Override
         public boolean matches(CharSequence rawPassword, String encodedPassword) {
             return encodedPassword.equals(encode(rawPassword));
+        }
+    }
+
+    private static final class RecordingPublisher implements RoomEventPublisher {
+        private final List<EventEnvelope<?>> publicEvents = new ArrayList<>();
+        private final List<EventEnvelope<?>> lobbyEvents = new ArrayList<>();
+
+        @Override
+        public void publishPublic(EventEnvelope<?> event) {
+            publicEvents.add(event);
+        }
+
+        @Override
+        public void publishPrivate(String userName, EventEnvelope<?> event) {
+        }
+
+        @Override
+        public void publishLobby(EventEnvelope<?> event) {
+            lobbyEvents.add(event);
         }
     }
 }

@@ -6,6 +6,16 @@ import { useAuthStore } from '../features/auth/authStore'
 import { createAppRouter } from './router'
 
 describe('application router', () => {
+  it('resolves room codes through the authenticated waiting-room route', () => {
+    const router = createAppRouter(createPinia())
+
+    const resolved = router.resolve('/rooms/123456')
+
+    expect(resolved.name).toBe('room')
+    expect(resolved.params.code).toBe('123456')
+    expect(resolved.meta.requiresAuth).toBe(true)
+  })
+
   it('shows home after a transient auth error and enters lobby after explicit recovery', async () => {
     let requests = 0
     server.use(http.get('/api/v1/me', () => {

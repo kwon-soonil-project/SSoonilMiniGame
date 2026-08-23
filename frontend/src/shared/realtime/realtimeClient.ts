@@ -16,6 +16,7 @@ export interface StompClientPort {
   activate(): void
   deactivate(): Promise<unknown>
   subscribe(destination: string, callback: (message: { body: string }) => void): SubscriptionPort
+  publish?(frame: { destination: string; body: string }): void
 }
 
 type StompFactory = () => StompClientPort
@@ -46,12 +47,25 @@ export class RealtimeClient {
     reject: (cause: Error) => void
   }> = []
   private readonly state = ref<ConnectionState>('disconnected')
+  private readonly stateHandlers = new Set<(state: ConnectionState) => void>()
   readonly connectionState: DeepReadonly<Ref<ConnectionState>> = readonly(this.state)
 
   constructor(private readonly factory: StompFactory = defaultFactory) {}
 
   subscribeLobby(handler: RealtimeMessageHandler): () => void {
     return this.subscribe('/topic/lobby', handler)
+  }
+
+  subscribeConnectionState(handler: (state: ConnectionState) => void): () => void {
+    this.stateHandlers.add(handler)
+    return () => this.stateHandlers.delete(handler)
+  }
+
+  publish(destination: string, body: string): void {
+    if (this.state.value !== 'connected' || !this.client?.publish) {
+      throw new Error('실시간 연결이 준비되지 않았습니다.')
+    }
+    this.client.publish({ destination, body })
   }
 
   subscribe(destination: string, handler: RealtimeMessageHandler): () => void {
@@ -75,7 +89,7 @@ export class RealtimeClient {
     if (this.state.value === 'connected') return Promise.resolve()
     if (this.connecting) return this.connecting
     const generation = ++this.generation
-    this.state.value = 'connecting'
+    this.setState('connecting')
     const attempt = this.connectCurrentOrReplacement(generation)
     this.connecting = attempt
     void attempt.then(
@@ -95,7 +109,7 @@ export class RealtimeClient {
     try {
       if (client) await this.deactivateClient(client)
     } finally {
-      if (this.generation === generation) this.state.value = 'disconnected'
+      if (this.generation === generation) this.setState('disconnected')
     }
   }
 
@@ -103,7 +117,7 @@ export class RealtimeClient {
     this.assertCurrentGeneration(generation)
     let client = this.client
     if (client?.active) {
-      this.state.value = 'reconnecting'
+      this.setState('reconnecting')
       return this.waitForConnection(client)
     }
     if (client) {
@@ -146,19 +160,19 @@ export class RealtimeClient {
   private configureCallbacks(client: StompClientPort): void {
     client.onConnect = () => {
       if (this.client !== client) return
-      this.state.value = 'connected'
       for (const destination of this.handlers.keys()) this.installSubscription(destination, client)
+      this.setState('connected')
       this.resolveWaiters(client)
     }
     client.onStompError = () => {
       if (this.client !== client) return
-      this.state.value = 'failed'
+      this.setState('failed')
       this.rejectWaiters(client, new Error('실시간 연결을 설정하지 못했습니다.'))
     }
     client.onWebSocketClose = () => {
       if (this.client !== client) return
       this.brokerSubscriptions.clear()
-      this.state.value = client.active ? 'reconnecting' : 'disconnected'
+      this.setState(client.active ? 'reconnecting' : 'disconnected')
     }
   }
 
@@ -203,6 +217,12 @@ export class RealtimeClient {
       for (const handler of this.handlers.get(destination) ?? []) handler(payload)
     })
     this.brokerSubscriptions.set(destination, subscription)
+  }
+
+  private setState(state: ConnectionState): void {
+    if (this.state.value === state) return
+    this.state.value = state
+    for (const handler of this.stateHandlers) handler(state)
   }
 }
 

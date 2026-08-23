@@ -2,6 +2,29 @@ import { describe, expect, it, vi } from 'vitest'
 import { RealtimeClient, type StompClientPort } from './realtimeClient'
 
 describe('RealtimeClient', () => {
+  it('publishes room commands through the existing connected STOMP client', async () => {
+    const publish = vi.fn()
+    const client: StompClientPort = {
+      active: false,
+      onConnect: () => undefined,
+      onStompError: () => undefined,
+      onWebSocketClose: () => undefined,
+      activate() { this.active = true; this.onConnect({}) },
+      deactivate: vi.fn(async () => undefined),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+      publish,
+    }
+    const realtime = new RealtimeClient(() => client)
+    await realtime.connect()
+
+    realtime.publish('/app/rooms/room-1/commands', '{"type":"PLAYER_READY"}')
+
+    expect(publish).toHaveBeenCalledWith({
+      destination: '/app/rooms/room-1/commands',
+      body: '{"type":"PLAYER_READY"}',
+    })
+  })
+
   it('connects with cookies and installs the lobby subscription', async () => {
     const subscriptions: string[] = []
     const client: StompClientPort = {
