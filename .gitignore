@@ -1,5 +1,6 @@
 # Superpowers brainstorming and SDD scratch work
 .superpowers/
+.worktrees/
 
 # Java / Gradle
 .gradle/
@@ -21,4 +22,3 @@
 
 # Generated Google GitHub Actions credentials
 gha-creds-*.json
-
