@@ -53,6 +53,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
@@ -70,11 +71,9 @@ class WebSocketBrokerIntegrationTest {
     private static final RoomId ROOM_ID = new RoomId(
             UUID.fromString("00000000-0000-0000-0000-000000005301")
     );
-    private static final String SESSION_ID = "broker-session";
+    private static final AtomicLong SESSION_SEQUENCE = new AtomicLong();
     private static final String DESTINATION = "/topic/rooms/" + ROOM_ID.value();
     private static final String USER_DESTINATION = "/user/queue/rooms/" + ROOM_ID.value();
-    private static final String USER_BROKER_DESTINATION =
-            "/queue/rooms/" + ROOM_ID.value() + "-user" + SESSION_ID;
     private static final Pattern SEQUENCE_JSON = Pattern.compile("\\\"sequence\\\":(\\d+)");
 
     @Autowired
@@ -99,9 +98,11 @@ class WebSocketBrokerIntegrationTest {
     ApplicationEventPublisher applicationEvents;
 
     private MessageHandler outboundHandler;
+    private String sessionId;
 
     @BeforeEach
     void setUpRoom() throws Exception {
+        sessionId = "broker-session-" + SESSION_SEQUENCE.incrementAndGet();
         rooms.findAll().forEach(room -> rooms.remove(room.id()));
         rooms.save(Room.create(
                 ROOM_ID,
@@ -122,7 +123,7 @@ class WebSocketBrokerIntegrationTest {
             applicationEvents.publishEvent(new SessionDisconnectEvent(
                     this,
                     disconnect,
-                    SESSION_ID,
+                    sessionId,
                     CloseStatus.NORMAL,
                     ACTOR
             ));
@@ -186,7 +187,7 @@ class WebSocketBrokerIntegrationTest {
         var delivery = new AtomicReference<>(new CountDownLatch(1));
         connectAndSubscribe(
                 USER_DESTINATION,
-                USER_BROKER_DESTINATION,
+                userBrokerDestination(),
                 "private-room-subscription",
                 message -> {
                     if (eventSequence(message) != null) {
@@ -241,7 +242,7 @@ class WebSocketBrokerIntegrationTest {
         assertThat(connected.await(5, TimeUnit.SECONDS)).isTrue();
         applicationEvents.publishEvent(new SessionConnectedEvent(this, connect, ACTOR));
         var subscription = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
-        subscription.setSessionId(SESSION_ID);
+        subscription.setSessionId(sessionId);
         subscription.setUser(ACTOR);
         subscription.setDestination(subscriptionDestination);
         subscription.setSubscriptionId(subscriptionId);
@@ -258,7 +259,7 @@ class WebSocketBrokerIntegrationTest {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while (System.nanoTime() < deadline) {
             var subscriptions = simpleBroker.getSubscriptionRegistry().findSubscriptions(message);
-            if (subscriptions.getOrDefault(SESSION_ID, List.of()).contains(subscriptionId)) {
+            if (subscriptions.getOrDefault(sessionId, List.of()).contains(subscriptionId)) {
                 return true;
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
@@ -282,9 +283,13 @@ class WebSocketBrokerIntegrationTest {
         return matcher.find() ? Long.parseLong(matcher.group(1)) : null;
     }
 
-    private static Message<byte[]> stomp(StompCommand command, String destination, String subscriptionId) {
+    private String userBrokerDestination() {
+        return "/queue/rooms/" + ROOM_ID.value() + "-user" + sessionId;
+    }
+
+    private Message<byte[]> stomp(StompCommand command, String destination, String subscriptionId) {
         var accessor = StompHeaderAccessor.create(command);
-        accessor.setSessionId(SESSION_ID);
+        accessor.setSessionId(sessionId);
         accessor.setUser(ACTOR);
         accessor.setLeaveMutable(true);
         if (destination != null) {
