@@ -15,6 +15,7 @@ const room: RoomSnapshot = {
     { actorId: 'guest-1', nickname: '참가감자', ready: false, spectator: false },
   ],
   chats: [],
+  game: null,
 }
 
 function mountRoom(actorId = 'host-1', attach = false) {

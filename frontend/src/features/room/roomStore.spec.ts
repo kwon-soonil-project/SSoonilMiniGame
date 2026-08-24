@@ -25,6 +25,7 @@ const snapshot: RoomSnapshot = {
   categoryPack: 'all',
   participants: [{ actorId: hostId, nickname: '방장감자', ready: false, spectator: false }],
   chats: [],
+  game: null,
 }
 
 function event(sequence: number, type: string, payload: Record<string, unknown>): RoomEvent {
@@ -76,6 +77,155 @@ function realtimeFake(order: string[] = []) {
 }
 
 describe('roomStore', () => {
+  const publicLiarState = {
+    gameType: 'LIAR', round: 1, phase: 'ROLE_REVEAL', deadlineAt: '2026-08-24T00:00:05Z',
+    hints: [], submittedPlayerIds: [], scores: { [hostId]: 0 },
+  }
+
+  const citizenPrivateState = { role: 'CITIZEN', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false }
+  const liarPrivateState = { role: 'LIAR', category: '음식', hintSubmitted: false, voteSubmitted: false }
+
+  async function joinRoom(fake: ReturnType<typeof realtimeFake>): Promise<ReturnType<typeof useRoomStore>> {
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(snapshot)),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+    return store
+  }
+
+  it('keeps private role data out of public state replacement', async () => {
+    const store = await joinRoom(realtimeFake())
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: { ...publicLiarState, role: 'LIAR', word: '비밀' } }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+
+    expect(store.snapshot?.game?.publicState).not.toHaveProperty('role')
+    expect(store.snapshot?.game?.publicState).not.toHaveProperty('word')
+    expect(store.snapshot?.game?.privateState).toMatchObject(liarPrivateState)
+  })
+
+  it('merges a same-sequence private sidecar received before its public game state', async () => {
+    const store = await joinRoom(realtimeFake())
+
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: citizenPrivateState }))
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+
+    expect(store.snapshot?.sequence).toBe(2)
+    expect(store.snapshot?.game).toMatchObject({ publicState: publicLiarState, privateState: citizenPrivateState })
+  })
+
+  it('does not require a second public sequence for a same-sequence private sidecar or duplicate delivery', async () => {
+    const store = await joinRoom(realtimeFake())
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: { ...publicLiarState, phase: 'HINTING' } }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: citizenPrivateState }))
+
+    expect(store.snapshot?.sequence).toBe(2)
+    expect(store.snapshot?.game).toMatchObject({ publicState: publicLiarState, privateState: liarPrivateState })
+  })
+
+  it('ignores a stale private sidecar after a newer game state has arrived', async () => {
+    const store = await joinRoom(realtimeFake())
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+    await store.applyPublicEvent(event(3, 'GAME_STATE_CHANGED', { game: { ...publicLiarState, phase: 'HINTING' } }))
+    await store.applyPrivateEvent(event(3, 'GAME_PRIVATE_STATE_CHANGED', { game: citizenPrivateState }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+
+    expect(store.snapshot?.game).toMatchObject({ publicState: { phase: 'HINTING' }, privateState: citizenPrivateState })
+  })
+
+  it('merges a private sidecar after a later non-game public event', async () => {
+    const store = await joinRoom(realtimeFake())
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+    await store.applyPublicEvent(event(3, 'CHAT_MESSAGE', {
+      messageId: 'game-sidecar-gap', actorId: guestId, nickname: '참가감자', body: '대화', sentAt: '2026-08-24T00:00:01Z',
+    }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+
+    expect(store.snapshot?.sequence).toBe(3)
+    expect(store.snapshot?.game).toMatchObject({ publicState: publicLiarState, privateState: liarPrivateState })
+  })
+
+  it('replaces both game projections from the reconnect REST snapshot', async () => {
+    const fake = realtimeFake()
+    let snapshotRequests = 0
+    const recovered = {
+      ...snapshot,
+      status: 'PLAYING',
+      sequence: 4,
+      game: { publicState: { ...publicLiarState, phase: 'HINTING' }, privateState: citizenPrivateState },
+    }
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(++snapshotRequests === 1 ? snapshot : recovered)),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+
+    fake.emitState('reconnecting')
+    fake.emitState('connected')
+    await vi.waitFor(() => expect(store.snapshot?.sequence).toBe(4))
+
+    expect(store.snapshot?.game).toMatchObject(recovered.game)
+  })
+
+  it('removes game state when the server returns the room to waiting', async () => {
+    const store = await joinRoom(realtimeFake())
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+    await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+
+    await store.applyPublicEvent(event(3, 'GAME_STATE_CHANGED', { game: null }))
+
+    expect(store.snapshot?.game).toBeNull()
+  })
+
+  it('reloads the authoritative snapshot instead of applying an unknown game phase', async () => {
+    const fake = realtimeFake()
+    let snapshotRequests = 0
+    const recovered = {
+      ...snapshot,
+      status: 'PLAYING',
+      sequence: 3,
+      game: { publicState: publicLiarState, privateState: citizenPrivateState },
+    }
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(++snapshotRequests === 1 ? snapshot : recovered)),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', {
+      game: { ...publicLiarState, phase: 'UNSUPPORTED_PHASE' },
+    }))
+
+    expect(snapshotRequests).toBe(2)
+    expect(store.snapshot).toMatchObject({ sequence: 3, game: recovered.game })
+  })
+
+  it('publishes typed start and action envelopes', async () => {
+    const fake = realtimeFake()
+    const store = await joinRoom(fake)
+
+    store.startGame()
+    store.sendGameAction('HINT_SUBMIT', { text: '따뜻해요' })
+
+    expect(fake.published.map(item => JSON.parse(item.body))).toMatchObject([
+      { type: 'GAME_START', payload: {} },
+      { type: 'GAME_ACTION', payload: { action: 'HINT_SUBMIT', data: { text: '따뜻해요' } } },
+    ])
+  })
+
   it('subscribes to public and private room events before loading the authoritative snapshot', async () => {
     const order: string[] = []
     const fake = realtimeFake(order)

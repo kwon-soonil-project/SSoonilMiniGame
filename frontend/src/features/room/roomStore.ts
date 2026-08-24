@@ -4,6 +4,14 @@ import { ApiError } from '../../shared/api/ApiError'
 import { apiRequest } from '../../shared/api/apiClient'
 import { EventSequencer, type SequencedEvent } from '../../shared/realtime/eventSequencer'
 import { realtimeClient, type ConnectionState } from '../../shared/realtime/realtimeClient'
+import {
+  sanitizeGamePrivateState,
+  sanitizeGamePublicState,
+  sanitizeGameSnapshot,
+  type GamePrivateState,
+  type GameSnapshot,
+  type LiarAction,
+} from '../games/gameTypes'
 
 export type GameType = 'LIAR' | 'DRAWING' | 'CHOSUNG' | 'MAJORITY'
 export type RoomStatus = 'WAITING' | 'PLAYING' | 'CLOSED'
@@ -37,6 +45,7 @@ export interface RoomSnapshot extends RoomSettings {
   sequence: number
   participants: RoomParticipant[]
   chats: RoomChatMessage[]
+  game: GameSnapshot | null
 }
 
 export interface RoomChatMessage {
@@ -67,7 +76,7 @@ export interface RoomRealtimePort {
 
 interface RoomCommand {
   requestId: string
-  type: 'PLAYER_READY' | 'CHAT_SEND' | 'ANSWER_SUBMIT' | 'ROOM_SETTINGS_UPDATE'
+  type: 'PLAYER_READY' | 'CHAT_SEND' | 'ANSWER_SUBMIT' | 'ROOM_SETTINGS_UPDATE' | 'GAME_START' | 'GAME_ACTION'
   payload: Record<string, unknown>
 }
 
@@ -126,6 +135,10 @@ function sanitizeSnapshot(value: unknown): RoomSnapshot {
   const participants = Array.isArray(value.participants)
     ? value.participants.map(sanitizeParticipant).filter((item): item is RoomParticipant => item !== null)
     : []
+  const game = value.game === null || value.game === undefined ? null : sanitizeGameSnapshot(value.game)
+  if (value.game !== null && value.game !== undefined && game === null) {
+    throw new Error('게임 상태 응답이 올바르지 않습니다.')
+  }
   return {
     roomId: value.roomId,
     code: value.code,
@@ -144,6 +157,7 @@ function sanitizeSnapshot(value: unknown): RoomSnapshot {
     categoryPack: stringValue(value.categoryPack),
     participants,
     chats: Array.isArray(value.chats) ? recentUniqueChats(value.chats) : [],
+    game,
   }
 }
 
@@ -189,6 +203,9 @@ export const useRoomStore = defineStore('room', () => {
   let pendingCleanup: { roomId: string; cause: Error; blockedThroughGeneration: number } | null = null
   let bufferedPublicEvents: RoomEvent[] = []
   let bufferedPrivateEvents: RoomEvent[] = []
+  let privateGameState: GamePrivateState | null = null
+  let privateGameSequence = Number.NEGATIVE_INFINITY
+  let publicGameSequence = Number.NEGATIVE_INFINITY
   let unsubscribePublic: (() => void) | null = null
   let unsubscribePrivate: (() => void) | null = null
   let unsubscribeState: (() => void) | null = null
@@ -318,6 +335,9 @@ export const useRoomStore = defineStore('room', () => {
     const authoritative = sanitizeSnapshot(next)
     snapshot.value = authoritative
     chats.value = [...authoritative.chats]
+    privateGameState = authoritative.game?.privateState ?? null
+    privateGameSequence = authoritative.game?.privateState ? authoritative.sequence : Number.NEGATIVE_INFINITY
+    publicGameSequence = authoritative.game ? authoritative.sequence : Number.NEGATIVE_INFINITY
   }
 
   async function applyPublicEvent(payload: unknown, generation: number = joinGeneration): Promise<void> {
@@ -336,6 +356,13 @@ export const useRoomStore = defineStore('room', () => {
 
   async function routeEvent(event: RoomEvent, generation: number = joinGeneration): Promise<void> {
     if (generation !== joinGeneration) return
+    if (event.type === 'GAME_STATE_CHANGED' && event.payload.game !== null && sanitizeGamePublicState(event.payload.game) === null) {
+      if (snapshot.value) {
+        const recovered = await reloadSnapshot(snapshot.value.roomId, generation)
+        sequencer?.reset(recovered.sequence)
+      }
+      return
+    }
     await sequencer?.accept(event, accepted => mutateFromEvent(accepted as RoomEvent))
     if (generation === joinGeneration && snapshot.value && sequencer) snapshot.value.sequence = sequencer.current
   }
@@ -356,6 +383,28 @@ export const useRoomStore = defineStore('room', () => {
         handleRecoveryFailure(cause, generation)
         return
       }
+    }
+    if (payload.type === 'GAME_PRIVATE_STATE_CHANGED') {
+      const privateState = sanitizeGamePrivateState(payload.payload.game)
+      if (!privateState) {
+        if (snapshot.value) {
+          try {
+            const recovered = await reloadSnapshot(snapshot.value.roomId, generation)
+            sequencer?.reset(recovered.sequence)
+          } catch (cause) {
+            handleRecoveryFailure(cause, generation)
+          }
+        }
+        return
+      }
+      if (payload.sequence < publicGameSequence || payload.sequence <= privateGameSequence) return
+      privateGameState = privateState
+      privateGameSequence = payload.sequence
+      const room = snapshot.value
+      if (room?.game && payload.sequence === publicGameSequence) {
+        room.game = { publicState: room.game.publicState, privateState }
+      }
+      return
     }
     if (payload.type === 'COMMAND_REJECTED') {
       const code = stringValue(payload.payload.code, 'ROOM_COMMAND_INVALID')
@@ -399,6 +448,23 @@ export const useRoomStore = defineStore('room', () => {
         room.status = 'CLOSED'
         error.value = '방이 종료되었습니다.'
         break
+      case 'GAME_STATE_CHANGED': {
+        if (payload.game === null) {
+          room.game = null
+          privateGameState = null
+          privateGameSequence = event.sequence
+          publicGameSequence = event.sequence
+          break
+        }
+        const publicState = sanitizeGamePublicState(payload.game)
+        if (!publicState) return
+        room.game = {
+          publicState,
+          privateState: privateGameSequence === event.sequence ? privateGameState : null,
+        }
+        publicGameSequence = event.sequence
+        break
+      }
       case 'CHAT_MESSAGE': {
         const message = sanitizeChatMessage(payload)
         if (message && !chats.value.some(item => item.messageId === message.messageId)) {
@@ -479,6 +545,10 @@ export const useRoomStore = defineStore('room', () => {
   function sendChat(body: string): void { publish('CHAT_SEND', { body }) }
   function sendAnswer(body: string): void { publish('ANSWER_SUBMIT', { body }) }
   function updateSettings(settings: RoomSettings): void { publish('ROOM_SETTINGS_UPDATE', { ...settings }) }
+  function startGame(): void { publish('GAME_START', {}) }
+  function sendGameAction(action: LiarAction, data: Record<string, unknown>): void {
+    publish('GAME_ACTION', { action, data })
+  }
 
   async function leave(): Promise<void> {
     const roomId = membershipRoomId ?? snapshot.value?.roomId
@@ -542,6 +612,9 @@ export const useRoomStore = defineStore('room', () => {
     synchronizing = false
     bufferedPublicEvents = []
     bufferedPrivateEvents = []
+    privateGameState = null
+    privateGameSequence = Number.NEGATIVE_INFINITY
+    publicGameSequence = Number.NEGATIVE_INFINITY
   }
 
   function clearRoom(): void {
@@ -552,6 +625,6 @@ export const useRoomStore = defineStore('room', () => {
   return {
     snapshot, connection, loading, error, commandError, passwordRequired, chats, unreadChatCount,
     chatOpen, join, applyPublicEvent, applyPrivateEvent, sendReady, sendChat, sendAnswer,
-    updateSettings, leave, openChat, closeChat, clearRoom, retryRecovery: synchronizeCurrentRoom,
+    updateSettings, startGame, sendGameAction, leave, openChat, closeChat, clearRoom, retryRecovery: synchronizeCurrentRoom,
   }
 })
