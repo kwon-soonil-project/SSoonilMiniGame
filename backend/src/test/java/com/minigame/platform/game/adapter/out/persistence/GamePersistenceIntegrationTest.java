@@ -184,6 +184,28 @@ class GamePersistenceIntegrationTest {
     }
 
     @Test
+    void session_specific_interrupt_does_not_touch_other_running_sessions() {
+        var interruptedId = UUID.randomUUID();
+        var unrelatedId = UUID.randomUUID();
+        var startedAt = Instant.parse("2026-08-24T12:00:00Z");
+        var interruptedAt = startedAt.plusSeconds(15);
+        gameSessions.start(new GameSessionPort.StartGameSession(
+                interruptedId, UUID.randomUUID(), GameType.LIAR, "{}", startedAt
+        ));
+        gameSessions.start(new GameSessionPort.StartGameSession(
+                unrelatedId, UUID.randomUUID(), GameType.LIAR, "{}", startedAt
+        ));
+
+        assertThat(gameSessions.interrupt(interruptedId, interruptedAt)).isTrue();
+
+        assertThat(jdbc.queryForObject("select status from game_sessions where id = ?", String.class, interruptedId))
+                .isEqualTo("INTERRUPTED");
+        assertThat(jdbc.queryForObject("select status from game_sessions where id = ?", String.class, unrelatedId))
+                .isEqualTo("RUNNING");
+        assertThat(gameSessions.interrupt(interruptedId, interruptedAt.plusSeconds(1))).isFalse();
+    }
+
+    @Test
     void concurrent_completions_persist_only_the_single_winning_result_set() throws Exception {
         var sessionId = UUID.randomUUID();
         var startedAt = Instant.parse("2026-08-24T12:00:00Z");

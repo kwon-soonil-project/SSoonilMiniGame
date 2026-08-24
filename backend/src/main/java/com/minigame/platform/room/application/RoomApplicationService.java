@@ -313,20 +313,29 @@ public class RoomApplicationService {
 
     public RoomSnapshotView snapshot(ActorPrincipal actor, RoomId roomId) {
         Objects.requireNonNull(actor, "actor");
-        var snapshot = find(roomId);
-        var participant = snapshot.participants().stream()
-                .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
-        if (!participant) {
-            throw violation("ROOM_PARTICIPANT_NOT_FOUND");
-        }
-        return snapshotView(snapshot, actor.actorId());
+        return repository.withRoomValue(roomId, room -> {
+            var snapshot = room.snapshot();
+            var participant = snapshot.participants().stream()
+                    .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
+            if (!participant) {
+                throw violation("ROOM_PARTICIPANT_NOT_FOUND");
+            }
+            return snapshotView(snapshot, actor.actorId());
+        }).value();
     }
 
     public void leave(ActorPrincipal actor, RoomId roomId, String requestId) {
         Objects.requireNonNull(actor, "actor");
         var result = repository.withRoom(roomId, room -> {
+            var leave = room.prepareLeave(actor.actorId(), requestId);
+            if (leave.isEmpty()) {
+                return room.leave(actor.actorId(), requestId);
+            }
             if (games != null) {
                 games.participantLeft(room, actor.actorId(), clock.instant());
+                if (leave.orElseThrow()) {
+                    games.roomClosed(room, clock.instant());
+                }
             }
             var events = room.leave(actor.actorId(), requestId);
             publishRoomEvents(roomId, actor, requestId, events);
@@ -344,9 +353,6 @@ public class RoomApplicationService {
             return;
         }
         if (result.snapshot().status() == RoomStatus.CLOSED) {
-            if (games != null) {
-                games.roomClosed(roomId);
-            }
             repository.remove(roomId);
             passwordHashes.remove(roomId);
             chatPolicy.clear(roomId);

@@ -1,9 +1,12 @@
 package com.minigame.platform.room.domain;
 
 import com.minigame.platform.auth.domain.ActorId;
+import com.minigame.platform.game.domain.GameRuntime;
+import com.minigame.platform.game.domain.GameState;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -316,6 +319,29 @@ class RoomTest {
     }
 
     @Test
+    void finished_games_remember_only_the_newest_twenty_content_ids() {
+        var room = RoomFixture.roomWithFourParticipants();
+        readyAllGuests(room);
+        var token = room.prepareGameStart(
+                RoomFixture.HOST, RoomFixture.requestId("recent-cap-prepare")
+        ).orElseThrow();
+        var contentIds = java.util.stream.IntStream.range(0, 25)
+                .mapToObj(index -> new UUID(0, index + 1L))
+                .toList();
+        var runtime = new GameRuntime(
+                UUID.randomUUID(), GameType.LIAR, new TestState(), token.activePlayers(), contentIds
+        );
+        room.startGame(
+                RoomFixture.HOST, RoomFixture.requestId("recent-cap-prepare"), token, runtime
+        );
+
+        room.finishGame(RoomFixture.HOST, RoomFixture.requestId("recent-cap-finish"));
+
+        assertThat(room.snapshot().recentContentIds())
+                .containsExactlyElementsOf(contentIds.subList(5, 25));
+    }
+
+    @Test
     void rejectsUnknownParticipantCommands() {
         var room = RoomFixture.emptyRoom();
 
@@ -332,5 +358,8 @@ class RoomTest {
         for (var actorId : List.of(RoomFixture.GUEST_1, RoomFixture.GUEST_2, RoomFixture.GUEST_3)) {
             room.changeReady(actorId, true, RoomFixture.requestId("ready-" + actorId.value()));
         }
+    }
+
+    private record TestState() implements GameState {
     }
 }

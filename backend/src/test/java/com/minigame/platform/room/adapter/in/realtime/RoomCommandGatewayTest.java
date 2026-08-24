@@ -114,6 +114,25 @@ class RoomCommandGatewayTest {
     }
 
     @Test
+    void rejects_null_nested_game_action_data_privately() {
+        var data = new java.util.LinkedHashMap<String, Object>();
+        data.put("hint", null);
+
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(
+                        "00000000-0000-0000-0000-000000005143",
+                        "GAME_ACTION",
+                        Map.of("action", "HINT_SUBMIT", "data", data)
+                ));
+
+        verifyNoInteractions(games);
+        assertThat(publisher.publicEvents).isEmpty();
+        assertThat(publisher.privateEvents).singleElement().satisfies(delivery ->
+                assertThat(delivery.event().payload())
+                        .isEqualTo(Map.of("code", "ROOM_COMMAND_INVALID")));
+    }
+
+    @Test
     void publishesReadyEventWithRoomSequence() {
         rooms.join(GUEST, new RoomCode(rooms.snapshot(HOST, new RoomId(roomId)).code()), null,
                 "00000000-0000-0000-0000-000000005099");

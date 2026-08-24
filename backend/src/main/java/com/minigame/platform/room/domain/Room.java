@@ -207,6 +207,25 @@ public final class Room {
         return complete(request, events);
     }
 
+    /** Read-only preflight used under the room lock before fallible leave/close orchestration. */
+    public Optional<Boolean> prepareLeave(ActorId actorId, String requestId) {
+        var request = processedRequest(actorId, CommandType.LEAVE, requestId);
+        if (processedRequests.contains(request)) {
+            return Optional.empty();
+        }
+        requireOpen();
+        requireParticipant(actorId);
+        if (participants.size() == 1) {
+            return Optional.of(true);
+        }
+        if (!hostId.equals(actorId)) {
+            return Optional.of(false);
+        }
+        return Optional.of(participants.values().stream()
+                .filter(participant -> !participant.actorId().equals(actorId))
+                .noneMatch(participant -> !participant.spectator()));
+    }
+
     public List<RoomEvent> acceptChat(ActorId actorId, String requestId) {
         var request = processedRequest(actorId, CommandType.CHAT_SEND, requestId);
         if (processedRequests.contains(request)) {
@@ -217,24 +236,37 @@ public final class Room {
         return complete(request, List.of(new RoomEvent.ChatAccepted(nextSequence())));
     }
 
-    public boolean validateGameStart(ActorId actorId, String requestId) {
+    public Optional<GameStartToken> prepareGameStart(ActorId actorId, String requestId) {
         var request = processedRequest(actorId, CommandType.GAME_START, requestId);
         if (processedRequests.contains(request)) {
-            return false;
+            return Optional.empty();
         }
         requireHost(actorId);
         if (status != RoomStatus.WAITING || gameRuntime != null || !participantsReadyToStart()) {
             throw new RoomRuleViolation("GAME_START_CONDITION_NOT_MET");
         }
-        return true;
+        return Optional.of(new GameStartToken(
+                hostId,
+                settings,
+                activeGamePlayers(),
+                List.copyOf(recentContentIds)
+        ));
     }
 
-    public List<RoomEvent> startGame(ActorId actorId, String requestId, GameRuntime runtime) {
+    public List<RoomEvent> startGame(
+            ActorId actorId,
+            String requestId,
+            GameStartToken expected,
+            GameRuntime runtime
+    ) {
         var request = processedRequest(actorId, CommandType.GAME_START, requestId);
         if (processedRequests.contains(request)) {
             return List.of();
         }
-        validateGameStart(actorId, requestId);
+        var current = prepareGameStart(actorId, requestId).orElseThrow();
+        if (!current.equals(Objects.requireNonNull(expected, "expected"))) {
+            throw new RoomRuleViolation("GAME_START_STATE_CHANGED");
+        }
         Objects.requireNonNull(runtime, "runtime");
         if (runtime.gameType() != settings.gameType()) {
             throw new RoomRuleViolation("GAME_TYPE_MISMATCH");
@@ -261,7 +293,20 @@ public final class Room {
         return List.of(new RoomEvent.GameStateChanged(nextSequence()));
     }
 
-    public List<RoomEvent> finishGame() {
+    public List<RoomEvent> finishGame(ActorId actorId, String requestId) {
+        var request = processedRequest(actorId, CommandType.RETURN_TO_WAITING, requestId);
+        if (processedRequests.contains(request)) {
+            return List.of();
+        }
+        requireHost(actorId);
+        return complete(request, finishGameNow());
+    }
+
+    public List<RoomEvent> finishGameOnExpiry() {
+        return finishGameNow();
+    }
+
+    private List<RoomEvent> finishGameNow() {
         if (status != RoomStatus.PLAYING || gameRuntime == null) {
             throw new RoomRuleViolation("GAME_NOT_RUNNING");
         }
@@ -275,7 +320,14 @@ public final class Room {
         gameRuntime = null;
         status = RoomStatus.WAITING;
         participants.replaceAll((actorId, participant) -> participant.withReady(false));
-        return List.of(new RoomEvent.GameStateChanged(nextSequence()));
+        var events = new ArrayList<RoomEvent>();
+        for (var actorId : previewSpectatorPromotions()) {
+            var participant = participants.get(actorId);
+            participants.put(actorId, participant.withSpectator(false));
+            events.add(new RoomEvent.PlayerSpectatorChanged(nextSequence(), actorId, false));
+        }
+        events.add(new RoomEvent.GameStateChanged(nextSequence()));
+        return List.copyOf(events);
     }
 
     public List<RoomEvent> promoteSpectators() {
@@ -299,11 +351,57 @@ public final class Room {
         return List.copyOf(events);
     }
 
+    public List<ActorId> previewSpectatorPromotions() {
+        var available = settings.maxParticipants() - (int) activeParticipantCount();
+        if (available <= 0) {
+            return List.of();
+        }
+        return participants.values().stream()
+                .filter(Participant::spectator)
+                .sorted(java.util.Comparator.comparingLong(Participant::joinedOrder))
+                .limit(available)
+                .map(Participant::actorId)
+                .toList();
+    }
+
+    public List<GamePlayer> activeGamePlayersAfterPromoting(List<ActorId> promotions) {
+        var promotionIds = Set.copyOf(promotions);
+        return participants.values().stream()
+                .filter(participant -> !participant.spectator() || promotionIds.contains(participant.actorId()))
+                .map(participant -> new GamePlayer(participant.actorId(), participant.nickname()))
+                .toList();
+    }
+
+    public List<RoomEvent> replaceGameAndPromote(GameRuntime runtime, List<ActorId> promotions) {
+        Objects.requireNonNull(runtime, "runtime");
+        if (status != RoomStatus.PLAYING || gameRuntime == null
+                || !gameRuntime.sessionId().equals(runtime.sessionId())) {
+            throw new RoomRuleViolation("GAME_NOT_RUNNING");
+        }
+        var expected = previewSpectatorPromotions();
+        if (!expected.equals(List.copyOf(promotions))) {
+            throw new RoomRuleViolation("GAME_ROSTER_CHANGED");
+        }
+        var events = new ArrayList<RoomEvent>();
+        for (var actorId : promotions) {
+            var participant = requireParticipant(actorId);
+            participants.put(actorId, participant.withSpectator(false));
+            events.add(new RoomEvent.PlayerSpectatorChanged(nextSequence(), actorId, false));
+        }
+        gameRuntime = runtime;
+        events.add(new RoomEvent.GameStateChanged(nextSequence()));
+        return List.copyOf(events);
+    }
+
     public List<GamePlayer> activeGamePlayers() {
         return participants.values().stream()
             .filter(participant -> !participant.spectator())
             .map(participant -> new GamePlayer(participant.actorId(), participant.nickname()))
             .toList();
+    }
+
+    public Optional<GameRuntime> gameRuntime() {
+        return Optional.ofNullable(gameRuntime);
     }
 
     public Snapshot snapshot() {
@@ -318,7 +416,7 @@ public final class Room {
             sequence,
             List.copyOf(participants.values()),
             participantsReadyToStart(),
-            Optional.ofNullable(gameRuntime),
+            Optional.ofNullable(gameRuntime).map(GameRuntime::snapshot),
             List.copyOf(recentContentIds),
             passwordProtected
         );
@@ -407,13 +505,27 @@ public final class Room {
         long sequence,
         List<Participant> participants,
         boolean participantsReadyToStart,
-        Optional<GameRuntime> gameRuntime,
+        Optional<GameRuntime.Snapshot> gameRuntime,
         List<UUID> recentContentIds,
         boolean passwordProtected
     ) {
         public Snapshot {
             participants = List.copyOf(participants);
             gameRuntime = Objects.requireNonNull(gameRuntime, "gameRuntime");
+            recentContentIds = List.copyOf(recentContentIds);
+        }
+    }
+
+    public record GameStartToken(
+            ActorId hostId,
+            RoomSettings settings,
+            List<GamePlayer> activePlayers,
+            List<UUID> recentContentIds
+    ) {
+        public GameStartToken {
+            Objects.requireNonNull(hostId, "hostId");
+            Objects.requireNonNull(settings, "settings");
+            activePlayers = List.copyOf(activePlayers);
             recentContentIds = List.copyOf(recentContentIds);
         }
     }
@@ -428,6 +540,7 @@ public final class Room {
         TRANSFER_HOST,
         LEAVE,
         CHAT_SEND,
-        GAME_START
+        GAME_START,
+        RETURN_TO_WAITING
     }
 }

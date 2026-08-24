@@ -11,6 +11,8 @@ public interface GameSessionPort {
 
     void complete(UUID sessionId, List<GameParticipantResult> results, Instant endedAt);
 
+    boolean interrupt(UUID sessionId, Instant interruptedAt);
+
     int interruptRunning(Instant interruptedAt);
 
     record StartGameSession(

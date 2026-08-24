@@ -2,12 +2,14 @@ package com.minigame.platform.room.application;
 
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.domain.GameType;
 import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomCode;
 import com.minigame.platform.room.domain.RoomEvent;
 import com.minigame.platform.room.domain.RoomId;
+import com.minigame.platform.room.domain.RoomFixture;
 import com.minigame.platform.room.domain.RoomRuleViolation;
 import com.minigame.platform.room.domain.Visibility;
 import com.minigame.platform.shared.realtime.EventEnvelope;
@@ -25,10 +27,15 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class RoomApplicationServiceTest {
     private static final ActorPrincipal HOST = ActorPrincipal.guest(new ActorId("atomic-host"), "원자감자");
@@ -230,6 +237,72 @@ class RoomApplicationServiceTest {
         });
     }
 
+    @Test
+    void closing_interrupt_failure_does_not_consume_leave_and_retry_can_close_room() {
+        var repository = new InMemoryActiveRoomRepository();
+        var games = mock(GameApplicationService.class);
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                new RecordingPublisher(),
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+        var created = service.create(HOST, "종료 재시도 방", Visibility.PRIVATE, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var requestId = "00000000-0000-0000-0000-000000008051";
+        doThrow(new IllegalStateException("interrupt failed"))
+                .doNothing()
+                .when(games).roomClosed(any(Room.class), any());
+
+        assertThatThrownBy(() -> service.leave(HOST, roomId, requestId))
+                .isInstanceOf(IllegalStateException.class).hasMessage("interrupt failed");
+        assertThat(repository.findById(roomId)).isPresent().get().satisfies(snapshot -> {
+            assertThat(snapshot.status()).isEqualTo(com.minigame.platform.room.domain.RoomStatus.WAITING);
+            assertThat(snapshot.participants()).hasSize(1);
+        });
+
+        service.leave(HOST, roomId, requestId);
+        assertThat(repository.findById(roomId)).isEmpty();
+    }
+
+    @Test
+    void requester_game_projection_and_can_start_are_built_while_room_lock_is_held() {
+        var repository = new LockAwareRepository();
+        repository.save(RoomFixture.emptyRoom());
+        var games = mock(GameApplicationService.class);
+        when(games.snapshot(any(), any())).thenAnswer(invocation -> {
+            assertThat(repository.insideLock).isTrue();
+            return Optional.empty();
+        });
+        when(games.canStart(any())).thenAnswer(invocation -> {
+            assertThat(repository.insideLock).isTrue();
+            return false;
+        });
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                new RecordingPublisher(),
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+
+        service.snapshot(
+                ActorPrincipal.guest(RoomFixture.HOST, "방장"),
+                RoomFixture.ROOM_ID
+        );
+    }
+
     private static class DelegatingRepository implements ActiveRoomRepository {
         final InMemoryActiveRoomRepository delegate = new InMemoryActiveRoomRepository();
 
@@ -266,6 +339,22 @@ class RoomApplicationServiceTest {
         @Override
         public void remove(RoomId roomId) {
             delegate.remove(roomId);
+        }
+    }
+
+    private static final class LockAwareRepository extends DelegatingRepository {
+        private final AtomicBoolean insideLock = new AtomicBoolean();
+
+        @Override
+        public RoomMutationResult withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command) {
+            return super.withRoom(roomId, room -> {
+                insideLock.set(true);
+                try {
+                    return command.apply(room);
+                } finally {
+                    insideLock.set(false);
+                }
+            });
         }
     }
 

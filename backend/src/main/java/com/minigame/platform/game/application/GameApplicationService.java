@@ -25,6 +25,8 @@ import com.minigame.platform.shared.realtime.EventEnvelope;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -43,6 +45,7 @@ import java.util.random.RandomGenerator;
 
 @Service
 public class GameApplicationService {
+    private static final Logger log = LoggerFactory.getLogger(GameApplicationService.class);
     private static final ActorPrincipal SYSTEM = ActorPrincipal.guest(new ActorId("game-system"), "시스템");
 
     private final ActiveRoomRepository rooms;
@@ -54,6 +57,7 @@ public class GameApplicationService {
     private final Clock clock;
     private final RandomGenerator random;
     private final Map<RoomId, ScheduledDeadline> schedules = new ConcurrentHashMap<>();
+    private final Set<StartRequest> startingRequests = ConcurrentHashMap.newKeySet();
 
     @Autowired
     public GameApplicationService(
@@ -90,55 +94,90 @@ public class GameApplicationService {
 
     public void start(ActorPrincipal actor, RoomId roomId, String requestId) {
         Objects.requireNonNull(actor, "actor");
-        var before = rooms.findById(roomId).orElseThrow(() -> violation("ROOM_NOT_FOUND"));
-        var settings = before.settings();
-        var selected = selectContent(settings, new LinkedHashSet<>(before.recentContentIds()));
-        rooms.withRoomValue(roomId, room -> {
-            if (!room.validateGameStart(actor.actorId(), requestId)) {
-                return null;
+        var requestUuid = canonicalRequestId(requestId);
+        var startRequest = new StartRequest(roomId, actor.actorId(), requestUuid);
+        if (!startingRequests.add(startRequest)) {
+            return;
+        }
+        try {
+            var token = rooms.withRoomValue(
+                    roomId,
+                    room -> room.prepareGameStart(actor.actorId(), requestId)
+            ).value();
+            if (token.isEmpty()) {
+                return;
             }
-            if (room.snapshot().settings().gameType() != GameType.LIAR
-                    || selected.size() != room.snapshot().settings().rounds()) {
-                throw violation("GAME_CONTENT_UNAVAILABLE");
-            }
-            var sessionId = UUID.randomUUID();
-            var players = room.activeGamePlayers();
-            var gameSettings = gameSettings(room.snapshot());
-            var transition = modules.get(GameType.LIAR).start(new GameStartContext(
-                    sessionId,
-                    players,
-                    gameSettings,
-                    new ArrayList<GameContent>(selected),
-                    clock.instant(),
-                    random
-            ));
-            var runtime = new GameRuntime(
-                    sessionId,
-                    GameType.LIAR,
-                    transition.state(),
-                    players,
-                    selected.stream().map(GameContent::id).toList()
-            );
-            runtime.applyScoreDeltas(transition.scoreDeltas());
-            var persistedId = sessions.start(new GameSessionPort.StartGameSession(
-                    sessionId,
-                    roomId.value(),
-                    GameType.LIAR,
-                    settingsJson(gameSettings),
-                    clock.instant()
-            ));
-            if (!sessionId.equals(persistedId)) {
-                throw new IllegalStateException("Game session persistence changed the session ID");
-            }
-            var events = room.startGame(actor.actorId(), requestId, runtime);
-            if (events.isEmpty()) {
-                return null;
-            }
-            publishGameState(room, actor, requestId, events.getFirst().sequence());
-            replaceSchedule(roomId, transition.deadline());
-            publishLobbyUpsert(room.snapshot(), actor, requestId);
-            return null;
-        });
+            var expected = token.orElseThrow();
+            var selected = selectContent(expected.settings(), new LinkedHashSet<>(expected.recentContentIds()));
+            rooms.withRoomValue(roomId, room -> {
+                Optional<Room.GameStartToken> current;
+                try {
+                    current = room.prepareGameStart(actor.actorId(), requestId);
+                } catch (com.minigame.platform.room.domain.RoomRuleViolation exception) {
+                    throw violation("GAME_START_STATE_CHANGED");
+                }
+                if (current.isEmpty()) {
+                    return null;
+                }
+                if (!current.orElseThrow().equals(expected)) {
+                    throw violation("GAME_START_STATE_CHANGED");
+                }
+                var sessionId = UUID.randomUUID();
+                var gameSettings = gameSettings(expected.settings());
+                var transition = modules.get(GameType.LIAR).start(new GameStartContext(
+                        sessionId,
+                        expected.activePlayers(),
+                        gameSettings,
+                        new ArrayList<GameContent>(selected),
+                        clock.instant(),
+                        random
+                ));
+                var runtime = new GameRuntime(
+                        sessionId,
+                        GameType.LIAR,
+                        transition.state(),
+                        expected.activePlayers(),
+                        selected.stream().map(GameContent::id).toList()
+                );
+                runtime.applyScoreDeltas(transition.scoreDeltas());
+                var persistedId = sessions.start(new GameSessionPort.StartGameSession(
+                        sessionId,
+                        roomId.value(),
+                        GameType.LIAR,
+                        settingsJson(gameSettings),
+                        clock.instant()
+                ));
+                if (!sessionId.equals(persistedId)) {
+                    sessions.interrupt(sessionId, clock.instant());
+                    throw new IllegalStateException("Game session persistence changed the session ID");
+                }
+                PreparedSchedule prepared;
+                try {
+                    prepared = prepareSchedule(roomId, transition.deadline());
+                } catch (RuntimeException exception) {
+                    sessions.interrupt(sessionId, clock.instant());
+                    throw exception;
+                }
+                try {
+                    var events = room.startGame(actor.actorId(), requestId, expected, runtime);
+                    if (events.isEmpty()) {
+                        prepared.cancel();
+                        sessions.interrupt(sessionId, clock.instant());
+                        return null;
+                    }
+                    commitSchedule(roomId, prepared);
+                    publishGameState(room, actor, requestId, events.getLast().sequence());
+                    publishLobbyUpsert(room.snapshot(), actor, requestId);
+                    return null;
+                } catch (RuntimeException exception) {
+                    prepared.cancel();
+                    sessions.interrupt(sessionId, clock.instant());
+                    throw exception;
+                }
+            });
+        } finally {
+            startingRequests.remove(startRequest);
+        }
     }
 
     public void act(
@@ -150,35 +189,44 @@ public class GameApplicationService {
     ) {
         Objects.requireNonNull(actor, "actor");
         var requestUuid = canonicalRequestId(requestId);
+        var gameAction = new GameAction(action, data);
         rooms.withRoomValue(roomId, room -> {
-            var runtime = room.snapshot().gameRuntime().orElseThrow(() -> violation("GAME_NOT_RUNNING"));
-            if (runtime.hasProcessedRequest(requestUuid)) {
-                return null;
-            }
-            if ("RETURN_TO_WAITING".equals(action)) {
-                requireCurrentHost(room, actor.actorId());
-                if (!(runtime.state() instanceof LiarGameState liar) || liar.phase() != LiarPhase.GAME_RESULT) {
-                    throw violation("GAME_ACTION_NOT_ALLOWED");
+            if ("RETURN_TO_WAITING".equals(gameAction.type())) {
+                var optionalRuntime = room.gameRuntime();
+                if (optionalRuntime.isPresent()) {
+                    var runtime = optionalRuntime.orElseThrow();
+                    requireCurrentHost(room, actor.actorId());
+                    if (!(runtime.state() instanceof LiarGameState liar) || liar.phase() != LiarPhase.GAME_RESULT) {
+                        throw violation("GAME_ACTION_NOT_ALLOWED");
+                    }
                 }
-                runtime.markRequestProcessed(requestUuid);
-                var sequence = room.finishGame().getFirst().sequence();
-                publishEmptyGame(roomId, actor, requestId, sequence);
-                replaceSchedule(roomId, Optional.empty());
+                var events = room.finishGame(actor.actorId(), requestId);
+                if (events.isEmpty()) {
+                    return null;
+                }
+                commitSchedule(roomId, PreparedSchedule.none());
+                publishFinishEvents(room, actor, requestId, events);
                 publishLobbyUpsert(room.snapshot(), actor, requestId);
                 return null;
             }
-            if ("DISCUSSION_END_PROPOSE".equals(action)) {
+            var runtime = room.gameRuntime().orElseThrow(() -> violation("GAME_NOT_RUNNING"));
+            if (runtime.hasProcessedRequest(requestUuid)) {
+                return null;
+            }
+            if ("DISCUSSION_END_PROPOSE".equals(gameAction.type())) {
                 requireCurrentHost(room, actor.actorId());
             }
             var module = modules.get(runtime.gameType());
             var transition = module.handle(
                     runtime.state(),
                     actor.actorId(),
-                    new GameAction(action, data),
+                    gameAction,
                     clock.instant()
             );
-            runtime.markRequestProcessed(requestUuid);
-            applyTransition(room, actor, requestId, runtime, transition, clock.instant());
+            applyTransition(
+                    room, actor, requestId, runtime, transition, clock.instant(),
+                    Optional.of(requestUuid), List.of(), null, false
+            );
             return null;
         });
     }
@@ -186,7 +234,7 @@ public class GameApplicationService {
     public void expire(RoomId roomId, GameDeadline expected) {
         Objects.requireNonNull(expected, "expected");
         rooms.withRoomValue(roomId, room -> {
-            var optionalRuntime = room.snapshot().gameRuntime();
+            var optionalRuntime = room.gameRuntime();
             if (optionalRuntime.isEmpty()) {
                 return null;
             }
@@ -195,16 +243,19 @@ public class GameApplicationService {
                 return null;
             }
             GameTransition transition;
+            List<ActorId> promotions = List.of();
+            List<com.minigame.platform.game.domain.GamePlayer> synchronizedPlayers = null;
+            boolean recordNextRound = false;
             if (runtime.state() instanceof LiarGameState liar && liar.phase() == LiarPhase.ROUND_RESULT) {
                 if (liar.round() < liar.totalRounds()) {
-                    publishRoomEvents(room, SYSTEM, UUID.randomUUID().toString(), room.promoteSpectators());
+                    promotions = room.previewSpectatorPromotions();
                 }
-                var players = room.activeGamePlayers();
-                runtime.synchronizePlayers(players);
+                var players = room.activeGamePlayersAfterPromoting(promotions);
+                synchronizedPlayers = players;
                 transition = modules.get(runtime.gameType())
                         .synchronizePlayers(runtime.state(), players, clock.instant());
                 if (transition.state() instanceof LiarGameState next && next.round() > liar.round()) {
-                    runtime.recordRoundParticipation(players);
+                    recordNextRound = true;
                 }
             } else {
                 transition = modules.get(runtime.gameType())
@@ -212,9 +263,9 @@ public class GameApplicationService {
             }
             if (transition.completed()) {
                 var requestId = UUID.randomUUID().toString();
-                var sequence = room.finishGame().getFirst().sequence();
-                publishEmptyGame(roomId, SYSTEM, requestId, sequence);
-                replaceSchedule(roomId, Optional.empty());
+                var events = room.finishGameOnExpiry();
+                commitSchedule(roomId, PreparedSchedule.none());
+                publishFinishEvents(room, SYSTEM, requestId, events);
                 publishLobbyUpsert(room.snapshot(), SYSTEM, requestId);
                 return null;
             }
@@ -223,14 +274,17 @@ public class GameApplicationService {
                     && transition.signals().isEmpty()) {
                 return null;
             }
-            applyTransition(room, SYSTEM, UUID.randomUUID().toString(), runtime, transition, clock.instant());
+            applyTransition(
+                    room, SYSTEM, UUID.randomUUID().toString(), runtime, transition, clock.instant(),
+                    Optional.empty(), promotions, synchronizedPlayers, recordNextRound
+            );
             return null;
         });
     }
 
     /** Called by RoomApplicationService while it already owns this room's lock. */
     public List<GameSignal> participantLeft(Room room, ActorId actorId, Instant now) {
-        var optionalRuntime = room.snapshot().gameRuntime();
+        var optionalRuntime = room.gameRuntime();
         if (optionalRuntime.isEmpty()) {
             return List.of();
         }
@@ -243,7 +297,10 @@ public class GameApplicationService {
         }
         var requestId = UUID.randomUUID().toString();
         var actor = principalFor(room.snapshot(), actorId);
-        applyTransition(room, actor, requestId, runtime, transition, now);
+        applyTransition(
+                room, actor, requestId, runtime, transition, now,
+                Optional.empty(), List.of(), null, false
+        );
         return transition.signals();
     }
 
@@ -259,8 +316,12 @@ public class GameApplicationService {
         return room.gameRuntime().map(runtime -> snapshot(runtime, viewer));
     }
 
-    public void roomClosed(RoomId roomId) {
-        replaceSchedule(roomId, Optional.empty());
+    public void roomClosed(Room room, Instant now) {
+        var runtime = room.gameRuntime().orElse(null);
+        if (runtime != null) {
+            sessions.interrupt(runtime.sessionId(), now);
+        }
+        cancelRoomScheduleStrict(room.snapshot().id());
     }
 
     private void applyTransition(
@@ -269,21 +330,42 @@ public class GameApplicationService {
             String requestId,
             GameRuntime runtime,
             GameTransition transition,
-            Instant now
+            Instant now,
+            Optional<UUID> processedRequest,
+            List<ActorId> promotions,
+            List<com.minigame.platform.game.domain.GamePlayer> synchronizedPlayers,
+            boolean recordNextRound
     ) {
         var previous = runtime.state();
+        var prepared = prepareSchedule(room.snapshot().id(), transition.deadline());
+        try {
+            if (enteredGameResult(previous, transition.state())) {
+                completeSession(runtime, transition.scoreDeltas(), now);
+            }
+        } catch (RuntimeException exception) {
+            prepared.cancel();
+            throw exception;
+        }
+        if (synchronizedPlayers != null) {
+            runtime.synchronizePlayers(synchronizedPlayers);
+            if (recordNextRound) {
+                runtime.recordRoundParticipation(synchronizedPlayers);
+            }
+        }
         runtime.replaceState(transition.state());
         runtime.applyScoreDeltas(transition.scoreDeltas());
-        var sequence = room.replaceGame(runtime).getFirst().sequence();
-        if (enteredGameResult(previous, transition.state())) {
-            completeSession(runtime, now);
-        }
-        publishGameState(room, actor, requestId, sequence);
-        replaceSchedule(room.snapshot().id(), transition.deadline());
+        processedRequest.ifPresent(runtime::markRequestProcessed);
+        var events = promotions.isEmpty()
+                ? room.replaceGame(runtime)
+                : room.replaceGameAndPromote(runtime, promotions);
+        commitSchedule(room.snapshot().id(), prepared);
+        publishRoomEvents(room, actor, requestId, events);
+        publishGameState(room, actor, requestId, events.getLast().sequence());
     }
 
-    private void completeSession(GameRuntime runtime, Instant now) {
-        var scores = runtime.scores();
+    private void completeSession(GameRuntime runtime, Map<ActorId, Integer> deltas, Instant now) {
+        var scores = new LinkedHashMap<>(runtime.scores());
+        deltas.forEach((actorId, delta) -> scores.merge(actorId, delta, Integer::sum));
         var nicknames = runtime.playerNicknames();
         var rounds = runtime.roundsPlayed();
         var results = scores.entrySet().stream()
@@ -301,19 +383,20 @@ public class GameApplicationService {
     }
 
     private void publishGameState(Room room, ActorPrincipal actor, String requestId, long sequence) {
-        var runtime = room.snapshot().gameRuntime().orElseThrow();
+        var roomSnapshot = room.snapshot();
+        var runtime = roomSnapshot.gameRuntime().orElseThrow();
         var publicState = snapshot(runtime, actor.actorId()).publicState();
-        publisher.publishPublic(EventEnvelope.create(
-                requestId, room.snapshot().id(), actor, "GAME_STATE_CHANGED", sequence, clock,
+        safePublish(() -> publisher.publishPublic(EventEnvelope.create(
+                requestId, roomSnapshot.id(), actor, "GAME_STATE_CHANGED", sequence, clock,
                 Map.of("game", publicState)
-        ));
-        for (var participant : room.snapshot().participants()) {
+        )));
+        for (var participant : roomSnapshot.participants()) {
             var privateState = snapshot(runtime, participant.actorId()).privateState();
             if (privateState != null) {
-                publisher.publishPrivate(participant.actorId().value(), EventEnvelope.create(
-                        requestId, room.snapshot().id(), actor, "GAME_PRIVATE_STATE_CHANGED", sequence, clock,
+                safePublish(() -> publisher.publishPrivate(participant.actorId().value(), EventEnvelope.create(
+                        requestId, roomSnapshot.id(), actor, "GAME_PRIVATE_STATE_CHANGED", sequence, clock,
                         Map.of("game", privateState)
-                ));
+                )));
             }
         }
     }
@@ -321,9 +404,23 @@ public class GameApplicationService {
     private void publishEmptyGame(RoomId roomId, ActorPrincipal actor, String requestId, long sequence) {
         var payload = new LinkedHashMap<String, Object>();
         payload.put("game", null);
-        publisher.publishPublic(EventEnvelope.create(
+        safePublish(() -> publisher.publishPublic(EventEnvelope.create(
                 requestId, roomId, actor, "GAME_STATE_CHANGED", sequence, clock, payload
-        ));
+        )));
+    }
+
+    private void publishFinishEvents(
+            Room room,
+            ActorPrincipal actor,
+            String requestId,
+            List<RoomEvent> events
+    ) {
+        publishRoomEvents(room, actor, requestId, events);
+        var gameEvent = events.stream()
+                .filter(RoomEvent.GameStateChanged.class::isInstance)
+                .map(RoomEvent::sequence)
+                .findFirst().orElseThrow();
+        publishEmptyGame(room.snapshot().id(), actor, requestId, gameEvent);
     }
 
     private void publishRoomEvents(
@@ -334,7 +431,7 @@ public class GameApplicationService {
     ) {
         for (var event : events) {
             if (event instanceof RoomEvent.PlayerSpectatorChanged changed) {
-                publisher.publishPublic(EventEnvelope.create(
+                safePublish(() -> publisher.publishPublic(EventEnvelope.create(
                         requestId,
                         room.snapshot().id(),
                         actor,
@@ -342,7 +439,7 @@ public class GameApplicationService {
                         changed.sequence(),
                         clock,
                         Map.of("actorId", changed.actorId().value(), "spectator", changed.spectator())
-                ));
+                )));
             }
         }
     }
@@ -356,7 +453,7 @@ public class GameApplicationService {
                 .filter(participant -> participant.actorId().equals(room.hostId()))
                 .map(participant -> participant.nickname())
                 .findFirst().orElse("");
-        publisher.publishLobby(EventEnvelope.create(
+        safePublish(() -> publisher.publishLobby(EventEnvelope.create(
                 requestId,
                 room.id(),
                 actor,
@@ -375,14 +472,22 @@ public class GameApplicationService {
                         "hostNickname", hostNickname,
                         "sequence", room.sequence()
                 )
-        ));
+        )));
     }
 
-    private GameSnapshotView snapshot(GameRuntime runtime, ActorId viewer) {
+    private GameSnapshotView snapshot(GameRuntime.Snapshot runtime, ActorId viewer) {
         var projected = modules.get(runtime.gameType()).project(runtime.state(), viewer);
         var publicState = publicState(projected.publicState(), runtime.scores());
         var privateState = projected.privateState().map(this::privateState).orElse(null);
         return new GameSnapshotView(publicState, privateState);
+    }
+
+    private void safePublish(Runnable publication) {
+        try {
+            publication.run();
+        } catch (RuntimeException exception) {
+            log.warn("Best-effort room event publication failed; clients recover from the room snapshot", exception);
+        }
     }
 
     private Object publicState(GameProjection.View view, Map<ActorId, Integer> scores) {
@@ -431,15 +536,38 @@ public class GameApplicationService {
         return Map.copyOf(result);
     }
 
-    private synchronized void replaceSchedule(RoomId roomId, Optional<GameDeadline> deadline) {
-        var previous = schedules.remove(roomId);
-        if (previous != null) {
-            previous.cancellation().cancel();
+    private PreparedSchedule prepareSchedule(RoomId roomId, Optional<GameDeadline> deadline) {
+        if (deadline.isEmpty()) {
+            return PreparedSchedule.none();
         }
-        deadline.ifPresent(expected -> {
-            var cancellation = scheduler.schedule(roomId, expected, () -> expire(roomId, expected));
-            schedules.put(roomId, new ScheduledDeadline(expected, cancellation));
-        });
+        var expected = deadline.orElseThrow();
+        var cancellation = scheduler.schedule(roomId, expected, () -> expire(roomId, expected));
+        return new PreparedSchedule(Optional.of(new ScheduledDeadline(expected, cancellation)));
+    }
+
+    private synchronized void commitSchedule(RoomId roomId, PreparedSchedule prepared) {
+        var replacement = prepared.scheduled().orElse(null);
+        var previous = replacement == null ? schedules.remove(roomId) : schedules.put(roomId, replacement);
+        if (previous != null && previous != replacement) {
+            cancelQuietly(previous.cancellation());
+        }
+    }
+
+    private synchronized void cancelRoomScheduleStrict(RoomId roomId) {
+        var current = schedules.get(roomId);
+        if (current == null) {
+            return;
+        }
+        current.cancellation().cancel();
+        schedules.remove(roomId, current);
+    }
+
+    private void cancelQuietly(GameSchedulePort.Cancellation cancellation) {
+        try {
+            cancellation.cancel();
+        } catch (RuntimeException exception) {
+            log.warn("Deadline cancellation failed after replacement was installed", exception);
+        }
     }
 
     private List<? extends GameContent> selectContent(
@@ -475,12 +603,12 @@ public class GameApplicationService {
         }
     }
 
-    private static GameSettings gameSettings(Room.Snapshot room) {
+    private static GameSettings gameSettings(com.minigame.platform.room.domain.RoomSettings settings) {
         return new GameSettings(
-                room.settings().rounds(),
-                room.settings().actionSeconds(),
-                room.settings().discussionSeconds(),
-                room.settings().categoryPack()
+                settings.rounds(),
+                settings.actionSeconds(),
+                settings.discussionSeconds(),
+                settings.categoryPack()
         );
     }
 
@@ -545,5 +673,28 @@ public class GameApplicationService {
     }
 
     private record ScheduledDeadline(GameDeadline deadline, GameSchedulePort.Cancellation cancellation) {
+    }
+
+    private record PreparedSchedule(Optional<ScheduledDeadline> scheduled) {
+        private PreparedSchedule {
+            Objects.requireNonNull(scheduled, "scheduled");
+        }
+
+        static PreparedSchedule none() {
+            return new PreparedSchedule(Optional.empty());
+        }
+
+        void cancel() {
+            scheduled.ifPresent(value -> {
+                try {
+                    value.cancellation().cancel();
+                } catch (RuntimeException exception) {
+                    log.warn("Prepared deadline cancellation failed during rollback", exception);
+                }
+            });
+        }
+    }
+
+    private record StartRequest(RoomId roomId, ActorId actorId, UUID requestId) {
     }
 }

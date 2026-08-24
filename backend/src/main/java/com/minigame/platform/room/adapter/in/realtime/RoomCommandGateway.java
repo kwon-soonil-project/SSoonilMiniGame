@@ -218,8 +218,13 @@ public class RoomCommandGateway {
     private static Map<String, Object> mapValue(Map<String, Object> payload, String key) {
         var value = payload.get(key);
         if (value instanceof Map<?, ?> raw
-                && raw.keySet().stream().allMatch(String.class::isInstance)) {
-            return Map.copyOf((Map<String, Object>) raw);
+                && raw.keySet().stream().allMatch(String.class::isInstance)
+                && raw.entrySet().stream().allMatch(entry -> entry.getKey() != null && entry.getValue() != null)) {
+            try {
+                return Map.copyOf((Map<String, Object>) raw);
+            } catch (NullPointerException exception) {
+                throw new CommandViolation("ROOM_COMMAND_INVALID");
+            }
         }
         throw new CommandViolation("ROOM_COMMAND_INVALID");
     }

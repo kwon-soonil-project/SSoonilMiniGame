@@ -104,6 +104,19 @@ class GameRuntimeTest {
         assertThat(runtime.scores()).containsEntry(PLAYER_ID, 3).containsEntry(departed, 2).containsEntry(newcomer, 0);
     }
 
+    @Test
+    void immutable_snapshot_does_not_change_when_live_runtime_advances_after_unlock() {
+        var runtime = runtime();
+        var snapshot = runtime.snapshot();
+
+        runtime.replaceState(new AdvancedState());
+        runtime.applyScoreDeltas(Map.of(PLAYER_ID, 7));
+
+        assertThat(snapshot.state()).isInstanceOf(TestState.class);
+        assertThat(snapshot.scores()).containsEntry(PLAYER_ID, 0);
+        assertThat(snapshot.scores()).isNotSameAs(runtime.scores());
+    }
+
     private static GameRuntime runtime() {
         return new GameRuntime(
                 new UUID(0, 1),
@@ -119,5 +132,8 @@ class GameRuntimeTest {
     }
 
     private record TestState() implements GameState {
+    }
+
+    private record AdvancedState() implements GameState {
     }
 }

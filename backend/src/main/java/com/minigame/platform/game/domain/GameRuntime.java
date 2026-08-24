@@ -151,4 +151,36 @@ public final class GameRuntime {
     public synchronized int processedRequestCount() {
         return processedRequestIds.size();
     }
+
+    public synchronized Snapshot snapshot() {
+        return new Snapshot(
+                sessionId,
+                gameType,
+                state,
+                scores,
+                playerNicknames,
+                roundsPlayed,
+                usedContentIds
+        );
+    }
+
+    public record Snapshot(
+            UUID sessionId,
+            GameType gameType,
+            GameState state,
+            Map<ActorId, Integer> scores,
+            Map<ActorId, String> playerNicknames,
+            Map<ActorId, Integer> roundsPlayed,
+            Set<UUID> usedContentIds
+    ) {
+        public Snapshot {
+            Objects.requireNonNull(sessionId, "sessionId");
+            Objects.requireNonNull(gameType, "gameType");
+            Objects.requireNonNull(state, "state");
+            scores = Map.copyOf(scores);
+            playerNicknames = Map.copyOf(playerNicknames);
+            roundsPlayed = Map.copyOf(roundsPlayed);
+            usedContentIds = Set.copyOf(usedContentIds);
+        }
+    }
 }

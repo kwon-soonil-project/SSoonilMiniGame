@@ -73,6 +73,21 @@ public class JpaGameSessionAdapter implements GameSessionPort {
                 .executeUpdate();
     }
 
+    @Override
+    @Transactional
+    public boolean interrupt(UUID sessionId, Instant interruptedAt) {
+        return entityManager().createQuery("""
+                        update GameSessionEntity session
+                           set session.status = 'INTERRUPTED',
+                               session.endedAt = :interruptedAt
+                         where session.id = :sessionId
+                           and session.status = 'RUNNING'
+                        """)
+                .setParameter("interruptedAt", interruptedAt)
+                .setParameter("sessionId", sessionId)
+                .executeUpdate() == 1;
+    }
+
     private EntityManager entityManager() {
         return entityManagers.getObject();
     }
