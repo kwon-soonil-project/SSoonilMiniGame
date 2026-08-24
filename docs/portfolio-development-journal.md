@@ -2227,7 +2227,6 @@ git commit -m "feat: persist liar content and game results"
 
 **Files:**
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GameAction.java`
-- Modify: `backend/src/main/java/com/minigame/platform/game/domain/GameContent.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GameDeadline.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GameModule.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GamePlayer.java`
