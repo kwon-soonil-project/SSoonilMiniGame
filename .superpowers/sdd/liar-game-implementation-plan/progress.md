@@ -62,7 +62,7 @@ Ruling: `DISCUSSION_END_PROPOSE` host authorization is enforced by Task 6 inside
 - Task 3: complete (`1cc1566..6edf006`; fix round 1/5 addressed 2 test-coverage findings and exposed/fixed duplicate actor IDs; scoped re-review approved)
 - Task 4: complete (`6edf006..dcbe708`; fix round 1/5 preserved authoritative public hint order; scoped re-review approved)
 - Task 5: complete (`dcbe708..da0550a`; fix round 1/5 addressed 7 findings; scoped re-review approved)
-- Task 6: complete (`da0550a..d7034aa`; room-locked orchestration, public/private projections, lifecycle persistence, scheduling and leave integration implemented; 173 backend tests passed; delegated review skipped per explicit no-subagent constraint)
+- Task 6: complete (`da0550a..3c3f89f`; Fix Round 1 addressed normalized authorization, failure-safe start/action/promotion and completion, session-specific close interruption, immutable locked projections, return idempotency, two-phase start validation, null STOMP data, final spectator activation, recent-content fallback/cap, and close retry safety; 196 backend tests passed; delegated review skipped per explicit no-subagent constraint)
 - Task 7: pending
 - Task 8: pending
 - Task 9: pending

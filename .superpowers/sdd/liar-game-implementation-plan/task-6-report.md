@@ -108,3 +108,81 @@ Actual result: `BUILD SUCCESSFUL in 25s`; 5 actionable tasks executed. JUnit XML
 - Game-originated lobby upserts now carry complete room metadata, including `passwordProtected`, but their payload is intentionally assembled without exposing password material.
 - The requested no-subagent constraint prevented delegated code review; the Task 6 plan/ADR checklist, focused tests, full regression suite, and diff audit were performed locally.
 - No frontend tasks, branch merge, push, or pull request were performed.
+
+## Fix Round 1
+
+### Commit and files
+
+- Implementation commit: `3c3f89f7bb011ec9c0d229430ad58128046fce1b` (`fix: harden liar game orchestration failures`).
+- Modified production files: `JpaGameSessionAdapter`, `GameApplicationService`, `GameSessionPort`, `GameRuntime`, `RoomCommandGateway`, `RoomApplicationService`, and `Room`.
+- Modified tests: `GamePersistenceIntegrationTest`, `GameApplicationServiceTest`, `GameRuntimeTest`, `RoomCommandGatewayTest`, `RoomApplicationServiceTest`, and `RoomTest`.
+- No frontend files were changed and no push was performed.
+
+### RED evidence
+
+Initial contract RED from `backend`:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest" --tests "com.minigame.platform.game.domain.GameRuntimeTest" --tests "com.minigame.platform.room.adapter.in.realtime.RoomCommandGatewayTest" --tests "com.minigame.platform.game.adapter.out.persistence.GamePersistenceIntegrationTest"
+```
+
+Actual result: `BUILD FAILED` during `compileTestJava` with five expected missing-contract errors for `GameSessionPort.interrupt(UUID, Instant)`, `GameApplicationService.roomClosed(Room, Instant)`, and `GameRuntime.snapshot()`.
+
+Failure-safe room-close RED:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest" --tests "com.minigame.platform.room.application.RoomApplicationServiceTest"
+```
+
+Actual result: `BUILD FAILED`; 32 tests executed and `closing_interrupt_failure_does_not_consume_leave_and_retry_can_close_room` failed because the original leave path committed `CLOSED` before the fallible session interruption.
+
+Strict deadline-cancellation RED:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest.room_close_does_not_report_success_until_deadline_cancellation_can_be_retried"
+```
+
+Actual result: `BUILD FAILED`; 1 test executed and 1 failed because cancellation exceptions were originally swallowed during room closure.
+
+### GREEN evidence
+
+Focused application, room, gateway, controller, domain, and persistence verification:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest" --tests "com.minigame.platform.room.application.RoomApplicationServiceTest" --tests "com.minigame.platform.room.domain.RoomTest" --tests "com.minigame.platform.game.domain.GameRuntimeTest" --tests "com.minigame.platform.room.adapter.in.realtime.RoomCommandGatewayTest" --tests "com.minigame.platform.room.adapter.in.web.RoomControllerTest" --tests "com.minigame.platform.game.adapter.out.persistence.GamePersistenceIntegrationTest"
+```
+
+Actual result: `BUILD SUCCESSFUL in 15s`; JUnit XML totals: **94 tests, 0 failures, 0 errors** across 7 suites.
+
+Fresh persistence rerun, including the session-specific atomic interrupt coverage:
+
+```powershell
+.\gradlew.bat test --rerun-tasks --tests "com.minigame.platform.game.adapter.out.persistence.GamePersistenceIntegrationTest"
+```
+
+Actual result: `BUILD SUCCESSFUL in 14s`; all 4 actionable tasks executed.
+
+Final clean backend verification after implementation commit:
+
+```powershell
+.\gradlew.bat clean test
+```
+
+Actual result: `BUILD SUCCESSFUL in 25s`; all 5 actionable tasks executed. JUnit XML totals: **196 tests, 0 failures, 0 errors, 0 skipped** across 31 suites. `git diff --check` reported no whitespace errors; output contained only the existing deprecated-test-API note and JVM class-data-sharing warning.
+
+### Architecture decisions
+
+- A normalized `GameAction` is constructed before authorization; current-room-host authorization is applied to the normalized type. STOMP map validation converts null nested data into a private `COMMAND_REJECTED` instead of allowing an NPE to escape.
+- Start now uses a locked validation token, performs content I/O outside the lock, and then revalidates the exact host, membership, status, readiness, settings, roster, rounds/category, and recent-content basis under the room lock. In-flight and already-processed duplicates do not query content.
+- New deadlines are scheduled before phase mutation and installed before the prior token is cancelled. Session completion, schedule creation, and request-id marking are ordered so a failure leaves the prior state/deadline and permits retry. Broker publication is explicitly best-effort; reconnect REST snapshots are authoritative recovery.
+- Spectator promotion is previewed rather than mutated before schedule/session work. The latest promoted roster is passed to both runtime and module synchronization only after critical work succeeds. Entering `GAME_RESULT` persists prospective final scores before committing that phase.
+- `Room.Snapshot` owns an immutable `GameRuntime.Snapshot`; requester-specific projection and `canStart` are computed inside `ActiveRoomRepository.withRoomValue`, producing one coherent room sequence/state/score view without exposing a live runtime after unlock.
+- Lifecycle return request ids are retained by `Room`, so a duplicate `RETURN_TO_WAITING` remains a successful no-op after runtime removal. Final return/expiry resets readiness and converts waiting spectators back to active seats in join order, publishing spectator changes before the empty-game state.
+- Room leave uses a request-aware, read-only close preflight. A specific `RUNNING` session is atomically changed to `INTERRUPTED`, and its deadline must cancel successfully, before `Room.leave` may commit `CLOSED` and before repository removal. Failures leave the leave request unconsumed for retry and never affect unrelated sessions.
+- Recent content remains capped to the newest 20 ids, and selection retries without exclusions only when the exclusion-aware query cannot fill all rounds.
+
+### Concerns and scope notes
+
+- Runtime/deadline ownership remains intentionally process-local; reconnect recovery uses the locked REST snapshot, while process restart recovery continues to interrupt persisted orphan `RUNNING` sessions.
+- Broker delivery is non-authoritative and may lose an individual frame during an outage; gameplay remains scheduled and committed, and clients reconcile through the requester-specific snapshot rather than blocking the room lock on broker availability.
+- No frontend work, subagent delegation, push, merge, or pull request was performed.
