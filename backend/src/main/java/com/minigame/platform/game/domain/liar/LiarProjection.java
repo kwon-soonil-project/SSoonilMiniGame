@@ -17,7 +17,8 @@ public final class LiarProjection {
             Instant deadlineAt,
             ActorId currentHinter,
             List<PublicHint> hints,
-            Set<ActorId> submittedPlayerIds
+            Set<ActorId> submittedPlayerIds,
+            LiarGameState.RoundResult roundResult
     ) implements GameProjection.View {
         public PublicState {
             hints = List.copyOf(hints);
