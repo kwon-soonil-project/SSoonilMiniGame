@@ -55,8 +55,12 @@ public final class RoomWebDtos {
             int discussionSeconds,
             String categoryPack,
             List<ParticipantResponse> participants,
-            List<ChatMessageResponse> chats
+            List<ChatMessageResponse> chats,
+            GameSnapshotResponse game
     ) {
+    }
+
+    public record GameSnapshotResponse(Object publicState, Object privateState) {
     }
 
     public record ChatMessageResponse(
@@ -107,7 +111,11 @@ public final class RoomWebDtos {
                         message.nickname(),
                         message.body(),
                         message.sentAt()
-                )).toList()
+                )).toList(),
+                view.game() == null ? null : new GameSnapshotResponse(
+                        view.game().publicState(),
+                        view.game().privateState()
+                )
         );
     }
 

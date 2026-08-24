@@ -28,4 +28,8 @@ public record Participant(
     public Participant withReady(boolean nextReady) {
         return new Participant(actorId, nickname, nextReady, spectator, joinedOrder);
     }
+
+    public Participant withSpectator(boolean nextSpectator) {
+        return new Participant(actorId, nickname, false, nextSpectator, joinedOrder);
+    }
 }

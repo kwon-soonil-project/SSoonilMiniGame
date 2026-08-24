@@ -25,4 +25,10 @@ public sealed interface RoomEvent {
 
     record ChatAccepted(long sequence) implements RoomEvent {
     }
+
+    record GameStateChanged(long sequence) implements RoomEvent {
+    }
+
+    record PlayerSpectatorChanged(long sequence, ActorId actorId, boolean spectator) implements RoomEvent {
+    }
 }

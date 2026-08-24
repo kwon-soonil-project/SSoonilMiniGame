@@ -2,6 +2,7 @@ package com.minigame.platform.room.adapter.in.realtime;
 
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.ActiveRoomRepository;
@@ -36,6 +37,9 @@ import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class RoomCommandGatewayTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-08-23T01:00:00Z"), ZoneOffset.UTC);
@@ -47,6 +51,7 @@ class RoomCommandGatewayTest {
     private RoomApplicationService rooms;
     private ChatPolicy chatPolicy;
     private RoomCommandGateway gateway;
+    private GameApplicationService games;
     private UUID roomId;
 
     @BeforeEach
@@ -70,7 +75,42 @@ class RoomCommandGatewayTest {
         );
         roomId = UUID.fromString(created.roomId());
         publisher.clear();
-        gateway = new RoomCommandGateway(rooms, chatPolicy, publisher, CLOCK);
+        games = mock(GameApplicationService.class);
+        gateway = new RoomCommandGateway(rooms, games, chatPolicy, publisher, CLOCK);
+    }
+
+    @Test
+    void dispatches_strict_game_start_and_action_envelopes() {
+        var startRequest = "00000000-0000-0000-0000-000000005140";
+        var actionRequest = "00000000-0000-0000-0000-000000005141";
+
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(startRequest, "GAME_START", Map.of()));
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(actionRequest, "GAME_ACTION", Map.of(
+                        "action", "HINT_SUBMIT",
+                        "data", Map.of("hint", "달콤해요")
+                )));
+
+        verify(games).start(HOST, new RoomId(roomId), startRequest);
+        verify(games).act(HOST, new RoomId(roomId), actionRequest,
+                "HINT_SUBMIT", Map.of("hint", "달콤해요"));
+    }
+
+    @Test
+    void rejects_game_action_payload_with_extra_or_non_map_fields_privately() {
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(
+                        "00000000-0000-0000-0000-000000005142",
+                        "GAME_ACTION",
+                        Map.of("action", "HINT_SUBMIT", "data", "not-a-map", "extra", true)
+                ));
+
+        verifyNoInteractions(games);
+        assertThat(publisher.publicEvents).isEmpty();
+        assertThat(publisher.privateEvents).singleElement().satisfies(delivery ->
+                assertThat(delivery.event().payload())
+                        .isEqualTo(Map.of("code", "ROOM_COMMAND_INVALID")));
     }
 
     @Test

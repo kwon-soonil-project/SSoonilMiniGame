@@ -4,6 +4,7 @@ import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.room.domain.GameType;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -24,6 +25,8 @@ public final class GameRuntime {
     private final GameType gameType;
     private GameState state;
     private final Map<ActorId, Integer> scores = new LinkedHashMap<>();
+    private final Map<ActorId, String> playerNicknames = new LinkedHashMap<>();
+    private final Map<ActorId, Integer> roundsPlayed = new LinkedHashMap<>();
     private final Set<UUID> usedContentIds = new LinkedHashSet<>();
     private final LinkedHashSet<UUID> processedRequestIds = new LinkedHashSet<>();
 
@@ -48,6 +51,8 @@ public final class GameRuntime {
                 throw new IllegalArgumentException("players must have unique actor IDs");
             }
             scores.put(actorId, 0);
+            playerNicknames.put(actorId, player.nickname());
+            roundsPlayed.put(actorId, 1);
         }
         this.usedContentIds.addAll(Objects.requireNonNull(usedContentIds, "usedContentIds"));
     }
@@ -72,6 +77,18 @@ public final class GameRuntime {
         return Map.copyOf(scores);
     }
 
+    public synchronized Set<ActorId> playerIds() {
+        return Set.copyOf(playerNicknames.keySet());
+    }
+
+    public synchronized Map<ActorId, String> playerNicknames() {
+        return Map.copyOf(playerNicknames);
+    }
+
+    public synchronized Map<ActorId, Integer> roundsPlayed() {
+        return Map.copyOf(roundsPlayed);
+    }
+
     /**
      * Adds newly active players to the cumulative scoreboard at zero without
      * dropping departed players, whose scores remain required for final ranks.
@@ -84,6 +101,15 @@ public final class GameRuntime {
                 throw new IllegalArgumentException("players must have unique actor IDs");
             }
             scores.putIfAbsent(actorId, 0);
+            playerNicknames.putIfAbsent(actorId, player.nickname());
+            roundsPlayed.putIfAbsent(actorId, 0);
+        }
+    }
+
+    public synchronized void recordRoundParticipation(List<GamePlayer> players) {
+        synchronizePlayers(players);
+        for (var player : players) {
+            roundsPlayed.merge(player.actorId(), 1, Integer::sum);
         }
     }
 
@@ -97,6 +123,10 @@ public final class GameRuntime {
 
     public synchronized Set<UUID> usedContentIds() {
         return Set.copyOf(usedContentIds);
+    }
+
+    public synchronized Set<UUID> usedContentIdsInOrder() {
+        return Collections.unmodifiableSet(new LinkedHashSet<>(usedContentIds));
     }
 
     public synchronized boolean recordUsedContent(UUID contentId) {

@@ -1,6 +1,8 @@
 package com.minigame.platform.room.adapter.in.realtime;
 
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
+import com.minigame.platform.game.domain.GameRuleViolation;
 import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.RoomApplicationService;
 import com.minigame.platform.room.domain.GameType;
@@ -10,6 +12,7 @@ import com.minigame.platform.room.domain.RoomSettings;
 import com.minigame.platform.shared.realtime.EventEnvelope;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.security.access.AccessDeniedException;
@@ -19,13 +22,30 @@ import java.security.Principal;
 import java.time.Clock;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Set;
 
 @Controller
 public class RoomCommandGateway {
     private final RoomApplicationService rooms;
+    private final GameApplicationService games;
     private final ChatPolicy chatPolicy;
     private final RoomEventPublisher publisher;
     private final Clock clock;
+
+    @Autowired
+    public RoomCommandGateway(
+            RoomApplicationService rooms,
+            GameApplicationService games,
+            ChatPolicy chatPolicy,
+            RoomEventPublisher publisher,
+            Clock clock
+    ) {
+        this.rooms = rooms;
+        this.games = games;
+        this.chatPolicy = chatPolicy;
+        this.publisher = publisher;
+        this.clock = clock;
+    }
 
     public RoomCommandGateway(
             RoomApplicationService rooms,
@@ -33,10 +53,7 @@ public class RoomCommandGateway {
             RoomEventPublisher publisher,
             Clock clock
     ) {
-        this.rooms = rooms;
-        this.chatPolicy = chatPolicy;
-        this.publisher = publisher;
-        this.clock = clock;
+        this(rooms, null, chatPolicy, publisher, clock);
     }
 
     @MessageMapping("/rooms/{roomId}/commands")
@@ -59,17 +76,47 @@ public class RoomCommandGateway {
                 );
                 case "ROOM_SETTINGS_UPDATE" -> updateSettings(actor, domainRoomId, command);
                 case "CHAT_SEND" -> sendChat(actor, domainRoomId, command);
+                case "GAME_START" -> startGame(actor, domainRoomId, command);
+                case "GAME_ACTION" -> gameAction(actor, domainRoomId, command);
                 default -> throw new CommandViolation("ROOM_COMMAND_UNSUPPORTED");
             }
         } catch (ChatPolicy.ChatPolicyViolation exception) {
             reject(actor, domainRoomId, command.requestId(), exception.code());
         } catch (RoomRuleViolation exception) {
             reject(actor, domainRoomId, command.requestId(), exception.code());
+        } catch (GameRuleViolation exception) {
+            reject(actor, domainRoomId, command.requestId(), exception.code());
         } catch (CommandViolation exception) {
             reject(actor, domainRoomId, command.requestId(), exception.code());
         } catch (IllegalArgumentException exception) {
             reject(actor, domainRoomId, command.requestId(), "ROOM_COMMAND_INVALID");
         }
+    }
+
+    private void startGame(ActorPrincipal actor, RoomId roomId, RoomCommands.RoomCommand command) {
+        if (games == null) {
+            throw new CommandViolation("ROOM_COMMAND_UNSUPPORTED");
+        }
+        if (!command.payload().isEmpty()) {
+            throw new CommandViolation("ROOM_COMMAND_INVALID");
+        }
+        games.start(actor, roomId, command.requestId());
+    }
+
+    private void gameAction(ActorPrincipal actor, RoomId roomId, RoomCommands.RoomCommand command) {
+        if (games == null) {
+            throw new CommandViolation("ROOM_COMMAND_UNSUPPORTED");
+        }
+        if (!command.payload().keySet().equals(Set.of("action", "data"))) {
+            throw new CommandViolation("ROOM_COMMAND_INVALID");
+        }
+        games.act(
+                actor,
+                roomId,
+                command.requestId(),
+                stringValue(command.payload(), "action"),
+                mapValue(command.payload(), "data")
+        );
     }
 
     private void sendChat(
@@ -163,6 +210,16 @@ public class RoomCommandGateway {
         var value = payload.get(key);
         if (value instanceof String stringValue) {
             return stringValue;
+        }
+        throw new CommandViolation("ROOM_COMMAND_INVALID");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> mapValue(Map<String, Object> payload, String key) {
+        var value = payload.get(key);
+        if (value instanceof Map<?, ?> raw
+                && raw.keySet().stream().allMatch(String.class::isInstance)) {
+            return Map.copyOf((Map<String, Object>) raw);
         }
         throw new CommandViolation("ROOM_COMMAND_INVALID");
     }

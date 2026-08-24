@@ -1,6 +1,8 @@
 package com.minigame.platform.room.domain;
 
 import com.minigame.platform.auth.domain.ActorId;
+import com.minigame.platform.game.domain.GamePlayer;
+import com.minigame.platform.game.domain.GameRuntime;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -9,11 +11,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 public final class Room {
     private static final int REMEMBERED_REQUEST_LIMIT = 1_024;
+    private static final int RECENT_CONTENT_LIMIT = 20;
 
     private final RoomId id;
     private final RoomCode code;
@@ -22,11 +26,14 @@ public final class Room {
     private final Map<ActorId, Participant> participants = new LinkedHashMap<>();
     private final Set<ProcessedRequest> processedRequests = new HashSet<>();
     private final ArrayDeque<ProcessedRequest> processedRequestOrder = new ArrayDeque<>();
+    private final ArrayDeque<UUID> recentContentIds = new ArrayDeque<>();
     private RoomSettings settings;
     private RoomStatus status;
     private ActorId hostId;
     private long sequence;
     private long nextJoinedOrder;
+    private GameRuntime gameRuntime;
+    private boolean passwordProtected;
 
     private Room(
         RoomId id,
@@ -62,6 +69,20 @@ public final class Room {
         return new Room(id, code, title, visibility, settings, hostId, hostNickname);
     }
 
+    public void markPasswordProtected() {
+        if (sequence != 0 || participants.size() != 1) {
+            throw new RoomRuleViolation("ROOM_PASSWORD_STATE_LOCKED");
+        }
+        passwordProtected = true;
+    }
+
+    public void rollbackPasswordProtection() {
+        if (sequence != 0) {
+            throw new RoomRuleViolation("ROOM_PASSWORD_STATE_LOCKED");
+        }
+        passwordProtected = false;
+    }
+
     public List<RoomEvent> join(ActorId actorId, String nickname, boolean spectator, String requestId) {
         var request = processedRequest(actorId, CommandType.JOIN, requestId);
         if (processedRequests.contains(request)) {
@@ -74,9 +95,10 @@ public final class Room {
         if (!spectator && activeParticipantCount() >= settings.maxParticipants()) {
             throw new RoomRuleViolation("ROOM_FULL");
         }
-        var participant = new Participant(actorId, nickname, false, spectator, nextJoinedOrder++);
+        var actualSpectator = spectator || status == RoomStatus.PLAYING;
+        var participant = new Participant(actorId, nickname, false, actualSpectator, nextJoinedOrder++);
         participants.put(actorId, participant);
-        if (!spectator) {
+        if (!actualSpectator) {
             resetNonHostReadiness();
         }
         return complete(request, List.of(new RoomEvent.ParticipantJoined(
@@ -195,6 +217,95 @@ public final class Room {
         return complete(request, List.of(new RoomEvent.ChatAccepted(nextSequence())));
     }
 
+    public boolean validateGameStart(ActorId actorId, String requestId) {
+        var request = processedRequest(actorId, CommandType.GAME_START, requestId);
+        if (processedRequests.contains(request)) {
+            return false;
+        }
+        requireHost(actorId);
+        if (status != RoomStatus.WAITING || gameRuntime != null || !participantsReadyToStart()) {
+            throw new RoomRuleViolation("GAME_START_CONDITION_NOT_MET");
+        }
+        return true;
+    }
+
+    public List<RoomEvent> startGame(ActorId actorId, String requestId, GameRuntime runtime) {
+        var request = processedRequest(actorId, CommandType.GAME_START, requestId);
+        if (processedRequests.contains(request)) {
+            return List.of();
+        }
+        validateGameStart(actorId, requestId);
+        Objects.requireNonNull(runtime, "runtime");
+        if (runtime.gameType() != settings.gameType()) {
+            throw new RoomRuleViolation("GAME_TYPE_MISMATCH");
+        }
+        var activeIds = participants.values().stream()
+            .filter(participant -> !participant.spectator())
+            .map(Participant::actorId)
+            .collect(java.util.stream.Collectors.toSet());
+        if (!runtime.playerIds().equals(activeIds)) {
+            throw new RoomRuleViolation("GAME_ROSTER_MISMATCH");
+        }
+        gameRuntime = runtime;
+        status = RoomStatus.PLAYING;
+        return complete(request, List.of(new RoomEvent.GameStateChanged(nextSequence())));
+    }
+
+    public List<RoomEvent> replaceGame(GameRuntime runtime) {
+        Objects.requireNonNull(runtime, "runtime");
+        if (status != RoomStatus.PLAYING || gameRuntime == null
+            || !gameRuntime.sessionId().equals(runtime.sessionId())) {
+            throw new RoomRuleViolation("GAME_NOT_RUNNING");
+        }
+        gameRuntime = runtime;
+        return List.of(new RoomEvent.GameStateChanged(nextSequence()));
+    }
+
+    public List<RoomEvent> finishGame() {
+        if (status != RoomStatus.PLAYING || gameRuntime == null) {
+            throw new RoomRuleViolation("GAME_NOT_RUNNING");
+        }
+        for (var contentId : gameRuntime.usedContentIdsInOrder()) {
+            recentContentIds.remove(contentId);
+            recentContentIds.addLast(contentId);
+            while (recentContentIds.size() > RECENT_CONTENT_LIMIT) {
+                recentContentIds.removeFirst();
+            }
+        }
+        gameRuntime = null;
+        status = RoomStatus.WAITING;
+        participants.replaceAll((actorId, participant) -> participant.withReady(false));
+        return List.of(new RoomEvent.GameStateChanged(nextSequence()));
+    }
+
+    public List<RoomEvent> promoteSpectators() {
+        if (status != RoomStatus.PLAYING || gameRuntime == null) {
+            throw new RoomRuleViolation("GAME_NOT_RUNNING");
+        }
+        var available = settings.maxParticipants() - (int) activeParticipantCount();
+        if (available <= 0) {
+            return List.of();
+        }
+        var promotions = participants.values().stream()
+            .filter(Participant::spectator)
+            .sorted(java.util.Comparator.comparingLong(Participant::joinedOrder))
+            .limit(available)
+            .toList();
+        var events = new ArrayList<RoomEvent>();
+        for (var participant : promotions) {
+            participants.put(participant.actorId(), participant.withSpectator(false));
+            events.add(new RoomEvent.PlayerSpectatorChanged(nextSequence(), participant.actorId(), false));
+        }
+        return List.copyOf(events);
+    }
+
+    public List<GamePlayer> activeGamePlayers() {
+        return participants.values().stream()
+            .filter(participant -> !participant.spectator())
+            .map(participant -> new GamePlayer(participant.actorId(), participant.nickname()))
+            .toList();
+    }
+
     public Snapshot snapshot() {
         return new Snapshot(
             id,
@@ -206,7 +317,10 @@ public final class Room {
             hostId,
             sequence,
             List.copyOf(participants.values()),
-            participantsReadyToStart()
+            participantsReadyToStart(),
+            Optional.ofNullable(gameRuntime),
+            List.copyOf(recentContentIds),
+            passwordProtected
         );
     }
 
@@ -259,7 +373,8 @@ public final class Room {
     }
 
     private boolean participantsReadyToStart() {
-        return activeParticipantCount() >= settings.gameType().minimumParticipants()
+        return status == RoomStatus.WAITING
+            && activeParticipantCount() >= settings.gameType().minimumParticipants()
             && participants.values().stream()
                 .filter(participant -> !participant.spectator())
                 .filter(participant -> !participant.actorId().equals(hostId))
@@ -291,8 +406,16 @@ public final class Room {
         ActorId hostId,
         long sequence,
         List<Participant> participants,
-        boolean participantsReadyToStart
+        boolean participantsReadyToStart,
+        Optional<GameRuntime> gameRuntime,
+        List<UUID> recentContentIds,
+        boolean passwordProtected
     ) {
+        public Snapshot {
+            participants = List.copyOf(participants);
+            gameRuntime = Objects.requireNonNull(gameRuntime, "gameRuntime");
+            recentContentIds = List.copyOf(recentContentIds);
+        }
     }
 
     private record ProcessedRequest(ActorId actorId, CommandType commandType, UUID requestId) {
@@ -304,6 +427,7 @@ public final class Room {
         UPDATE_SETTINGS,
         TRANSFER_HOST,
         LEAVE,
-        CHAT_SEND
+        CHAT_SEND,
+        GAME_START
     }
 }

@@ -22,5 +22,14 @@ public interface ActiveRoomRepository {
 
     RoomMutationResult withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command);
 
+    default <T> LockedRoomResult<T> withRoomValue(RoomId roomId, Function<Room, T> command) {
+        var value = new java.util.concurrent.atomic.AtomicReference<T>();
+        var result = withRoom(roomId, room -> {
+            value.set(command.apply(room));
+            return List.of();
+        });
+        return new LockedRoomResult<>(value.get(), result.snapshot());
+    }
+
     void remove(RoomId roomId);
 }
