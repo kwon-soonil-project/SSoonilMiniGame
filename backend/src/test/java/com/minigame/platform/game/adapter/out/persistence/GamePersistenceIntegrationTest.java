@@ -19,6 +19,9 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -113,7 +116,8 @@ class GamePersistenceIntegrationTest {
         var endedAt = startedAt.plusSeconds(90);
         var roomId = UUID.randomUUID();
         var winnerId = UUID.randomUUID();
-        var sharedSecondId = UUID.randomUUID();
+        var sharedSecondAId = UUID.randomUUID();
+        var sharedSecondBId = UUID.randomUUID();
 
         gameSessions.start(new GameSessionPort.StartGameSession(
                 completedId, roomId, GameType.LIAR, "{\"category\":\"food\"}", startedAt
@@ -123,7 +127,8 @@ class GamePersistenceIntegrationTest {
         ));
         gameSessions.complete(completedId, List.of(
                 new GameSessionPort.GameParticipantResult(winnerId, "우승자", 20, 1, 3),
-                new GameSessionPort.GameParticipantResult(sharedSecondId, "공동2위", 10, 2, 3)
+                new GameSessionPort.GameParticipantResult(sharedSecondAId, "공동2위A", 10, 2, 3),
+                new GameSessionPort.GameParticipantResult(sharedSecondBId, "공동2위B", 10, 2, 3)
         ), endedAt);
 
         assertThat(gameSessions.interruptRunning(endedAt)).isEqualTo(1);
@@ -141,7 +146,8 @@ class GamePersistenceIntegrationTest {
                 """, completedId);
         assertThat(participants).containsExactlyInAnyOrder(
                 java.util.Map.of("actor_id", winnerId, "nickname", "우승자", "score", 20, "rank", 1, "rounds_played", 3),
-                java.util.Map.of("actor_id", sharedSecondId, "nickname", "공동2위", "score", 10, "rank", 2, "rounds_played", 3)
+                java.util.Map.of("actor_id", sharedSecondAId, "nickname", "공동2위A", "score", 10, "rank", 2, "rounds_played", 3),
+                java.util.Map.of("actor_id", sharedSecondBId, "nickname", "공동2위B", "score", 10, "rank", 2, "rounds_played", 3)
         );
         assertThat(jdbc.queryForObject(
                 "select status from game_sessions where id = ?",
@@ -177,11 +183,87 @@ class GamePersistenceIntegrationTest {
         )).isZero();
     }
 
+    @Test
+    void concurrent_completions_persist_only_the_single_winning_result_set() throws Exception {
+        var sessionId = UUID.randomUUID();
+        var startedAt = Instant.parse("2026-08-24T12:00:00Z");
+        var firstActorId = UUID.randomUUID();
+        var secondActorId = UUID.randomUUID();
+        var firstEndedAt = startedAt.plusSeconds(60);
+        var secondEndedAt = startedAt.plusSeconds(61);
+        var barrier = new CyclicBarrier(2);
+
+        gameSessions.start(new GameSessionPort.StartGameSession(
+                sessionId, UUID.randomUUID(), GameType.LIAR, "{\"category\":\"food\"}", startedAt
+        ));
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var first = executor.submit(() -> competeToComplete(
+                    barrier,
+                    sessionId,
+                    new GameSessionPort.GameParticipantResult(firstActorId, "첫결과", 10, 1, 3),
+                    firstEndedAt
+            ));
+            var second = executor.submit(() -> competeToComplete(
+                    barrier,
+                    sessionId,
+                    new GameSessionPort.GameParticipantResult(secondActorId, "둘째결과", 20, 1, 3),
+                    secondEndedAt
+            ));
+
+            var attempts = List.of(first.get(5, TimeUnit.SECONDS), second.get(5, TimeUnit.SECONDS));
+            var winner = attempts.stream().filter(CompletionAttempt::completed).findFirst().orElseThrow();
+            var loser = attempts.stream().filter(attempt -> !attempt.completed()).findFirst().orElseThrow();
+
+            assertThat(attempts).filteredOn(CompletionAttempt::completed).hasSize(1);
+            assertThat(loser.failure()).isInstanceOf(GameSessionNotRunningException.class);
+            assertThat(jdbc.queryForObject(
+                    "select status from game_sessions where id = ?",
+                    String.class,
+                    sessionId
+            )).isEqualTo("COMPLETED");
+            assertThat(sessionEndedAt(sessionId)).isEqualTo(winner.endedAt());
+            var participants = jdbc.queryForList("""
+                    select actor_id, nickname, score, rank, rounds_played
+                      from game_participants
+                     where session_id = ?
+                    """, sessionId);
+            assertThat(participants).containsExactly(java.util.Map.of(
+                    "actor_id", winner.actorId(),
+                    "nickname", winner.actorId().equals(firstActorId) ? "첫결과" : "둘째결과",
+                    "score", winner.actorId().equals(firstActorId) ? 10 : 20,
+                    "rank", 1,
+                    "rounds_played", 3
+            ));
+            assertThat(participants).extracting(row -> row.get("actor_id")).doesNotContain(loser.actorId());
+        }
+    }
+
     private Instant sessionEndedAt(UUID sessionId) {
         return jdbc.queryForObject(
                 "select ended_at from game_sessions where id = ?",
                 (resultSet, rowNum) -> resultSet.getObject("ended_at", OffsetDateTime.class).toInstant(),
                 sessionId
         );
+    }
+
+    private CompletionAttempt competeToComplete(
+            CyclicBarrier barrier,
+            UUID sessionId,
+            GameSessionPort.GameParticipantResult result,
+            Instant endedAt
+    ) {
+        try {
+            barrier.await();
+            gameSessions.complete(sessionId, List.of(result), endedAt);
+            return new CompletionAttempt(result.actorId(), endedAt, true, null);
+        } catch (GameSessionNotRunningException exception) {
+            return new CompletionAttempt(result.actorId(), endedAt, false, exception);
+        } catch (Exception exception) {
+            throw new AssertionError("Concurrent completion failed unexpectedly", exception);
+        }
+    }
+
+    private record CompletionAttempt(UUID actorId, Instant endedAt, boolean completed, Throwable failure) {
     }
 }
