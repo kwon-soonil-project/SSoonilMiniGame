@@ -92,6 +92,18 @@ class GameRuntimeTest {
         ));
     }
 
+    @Test
+    void synchronizing_players_adds_newcomers_at_zero_and_retains_departed_scores_for_ranking() {
+        var runtime = runtime();
+        var departed = new ActorId("departed");
+        var newcomer = new ActorId("newcomer");
+        runtime.applyScoreDeltas(Map.of(PLAYER_ID, 3, departed, 2));
+
+        runtime.synchronizePlayers(List.of(new GamePlayer(PLAYER_ID, "runtime"), new GamePlayer(newcomer, "new")));
+
+        assertThat(runtime.scores()).containsEntry(PLAYER_ID, 3).containsEntry(departed, 2).containsEntry(newcomer, 0);
+    }
+
     private static GameRuntime runtime() {
         return new GameRuntime(
                 new UUID(0, 1),

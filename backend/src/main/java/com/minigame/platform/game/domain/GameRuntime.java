@@ -72,6 +72,21 @@ public final class GameRuntime {
         return Map.copyOf(scores);
     }
 
+    /**
+     * Adds newly active players to the cumulative scoreboard at zero without
+     * dropping departed players, whose scores remain required for final ranks.
+     */
+    public synchronized void synchronizePlayers(List<GamePlayer> players) {
+        var playerIds = new HashSet<ActorId>();
+        for (var player : Objects.requireNonNull(players, "players")) {
+            var actorId = Objects.requireNonNull(player, "player").actorId();
+            if (!playerIds.add(actorId)) {
+                throw new IllegalArgumentException("players must have unique actor IDs");
+            }
+            scores.putIfAbsent(actorId, 0);
+        }
+    }
+
     public synchronized void applyScoreDeltas(Map<ActorId, Integer> scoreDeltas) {
         Objects.requireNonNull(scoreDeltas, "scoreDeltas").forEach((actorId, delta) -> {
             Objects.requireNonNull(actorId, "actorId");

@@ -103,6 +103,41 @@ class LiarVotingTest {
         assertThat(result.scoreDeltas().values()).allMatch(score -> score == 1);
     }
 
+    @Test
+    void proposal_has_no_player_order_authorization_semantics() {
+        var state = discussing();
+        var proposer = state.players().getLast().actorId();
+        var firstYes = state.players().getFirst().actorId();
+        var secondYes = state.players().get(1).actorId();
+
+        var proposed = module.handle(state, proposer, action("DISCUSSION_END_PROPOSE", Map.of()), NOW);
+        var second = module.handle(proposed.state(), firstYes, action("DISCUSSION_END_VOTE", Map.of("agree", true)), NOW);
+        var third = module.handle(second.state(), secondYes, action("DISCUSSION_END_VOTE", Map.of("agree", true)), NOW);
+
+        assertThat(((LiarGameState) third.state()).phase()).isEqualTo(LiarPhase.VOTING);
+    }
+
+    @Test
+    void late_vote_is_rejected_without_mutating_vote_state() {
+        var state = voting();
+        var voter = state.players().getFirst().actorId();
+
+        assertThatThrownBy(() -> module.handle(state, voter, action("VOTE_SUBMIT", Map.of("targetActorId", state.players().get(1).actorId().value())), state.deadlineAt()))
+                .hasMessage("GAME_ACTION_NOT_ALLOWED");
+        assertThat(state.votes()).isEmpty();
+        assertThat(state.phase()).isEqualTo(LiarPhase.VOTING);
+    }
+
+    @Test
+    void late_liar_guess_is_rejected_without_score_or_outcome_mutation() {
+        var state = accusedLiar();
+
+        assertThatThrownBy(() -> module.handle(state, state.liarId(), action("LIAR_GUESS_SUBMIT", Map.of("answer", "붕어빵")), state.deadlineAt()))
+                .hasMessage("GAME_ACTION_NOT_ALLOWED");
+        assertThat(state.roundResult()).isNull();
+        assertThat(state.phase()).isEqualTo(LiarPhase.LIAR_GUESSING);
+    }
+
     private LiarGameState discussing() {
         var transition = module.start(context());
         var state = (LiarGameState) transition.state();

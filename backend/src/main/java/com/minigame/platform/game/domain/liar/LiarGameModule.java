@@ -20,6 +20,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.random.RandomGenerator;
@@ -57,6 +58,7 @@ public final class LiarGameModule implements GameModule {
     @Override
     public GameTransition handle(GameState gameState, ActorId actorId, GameAction action, Instant now) {
         var state = liarState(gameState);
+        if (!now.isBefore(state.deadlineAt())) throw violation("GAME_ACTION_NOT_ALLOWED");
         return switch (state.phase()) {
             case HINTING -> handleHint(state, actorId, action, now);
             case DISCUSSING -> handleDiscussion(state, actorId, action, now);
@@ -77,7 +79,7 @@ public final class LiarGameModule implements GameModule {
             case DISCUSSING -> enterVoting(state, now);
             case VOTING, REVOTING -> resolveVote(state, now);
             case LIAR_GUESSING -> finishRound(state, LiarGameState.RoundResult.citizensWon(state.liarId(), false), now);
-            case ROUND_RESULT -> state.round() == state.totalRounds() ? enterGameResult(state, now) : nextRound(state, state.players(), now);
+            case ROUND_RESULT -> unchanged(state);
             case GAME_RESULT -> new GameTransition(state, List.of(), Map.of(), Optional.empty(), true);
         };
     }
@@ -85,6 +87,7 @@ public final class LiarGameModule implements GameModule {
     @Override
     public GameTransition removePlayer(GameState gameState, ActorId actorId, Instant now) {
         var state = liarState(gameState);
+        if (state.phase() == LiarPhase.ROUND_RESULT || state.phase() == LiarPhase.GAME_RESULT) return unchanged(state);
         if (!activeIds(state).contains(actorId)) return unchanged(state);
         var remaining = state.players().stream().filter(player -> !player.actorId().equals(actorId)).toList();
         var reduced = copy(state, remaining, state.liarBag().stream().filter(id -> !id.equals(actorId)).toList(), state.randomState(),
@@ -100,8 +103,11 @@ public final class LiarGameModule implements GameModule {
     @Override
     public GameTransition synchronizePlayers(GameState gameState, List<GamePlayer> players, Instant now) {
         var state = liarState(gameState);
-        validateRoster(players);
-        if (state.phase() == LiarPhase.ROUND_RESULT && state.round() < state.totalRounds()) return nextRound(state, players, now);
+        validateUniqueRoster(players);
+        if (state.phase() == LiarPhase.ROUND_RESULT) {
+            if (state.round() == state.totalRounds() || players.size() < GameType.LIAR.minimumParticipants()) return enterGameResult(state, now);
+            return nextRound(state, players, now);
+        }
         var departing = state.players().stream().map(GamePlayer::actorId).filter(id -> players.stream().noneMatch(player -> player.actorId().equals(id))).toList();
         GameTransition transition = unchanged(state);
         for (var departed : departing) transition = removePlayer(transition.state(), departed, now);
@@ -143,7 +149,6 @@ public final class LiarGameModule implements GameModule {
     private GameTransition handleDiscussion(LiarGameState state, ActorId actorId, GameAction action, Instant now) {
         requireActive(state, actorId);
         if (DISCUSSION_END_PROPOSE.equals(action.type())) {
-            if (!actorId.equals(state.players().getFirst().actorId())) throw violation("GAME_ACTION_NOT_ALLOWED");
             if (!state.discussionEndRespondents().isEmpty()) throw violation("GAME_ALREADY_SUBMITTED");
             var proposed = copy(state, state.players(), state.liarBag(), state.randomState(), state.hintOrder(), state.hintIndex(), state.hints(), Set.of(actorId), Set.of(actorId), state.votes(), state.revoteCandidates(), false, null);
             return majority(proposed) ? enterVoting(proposed, now) : transition(proposed, List.of(GameSignal.publicSignal("DISCUSSION_END_PROPOSED", Map.of("playerId", actorId))));
@@ -233,7 +238,6 @@ public final class LiarGameModule implements GameModule {
         Set<ActorId> ids = players.stream().map(GamePlayer::actorId).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
         var bag = new ArrayList<>(state.liarBag().stream().filter(ids::contains).toList());
         var randomState = state.randomState();
-        for (var id : ids) if (!bag.contains(id)) bag.add(id);
         if (bag.isEmpty()) { var shuffled = shuffle(ids, randomState); bag.addAll(shuffled.ids()); randomState = shuffled.randomState(); }
         var liar = bag.removeFirst(); var hints = shuffle(ids, randomState);
         var next = new LiarGameState(state.sessionId(), state.round() + 1, state.phaseVersion() + 1, state.totalRounds(), state.actionSeconds(), state.discussionSeconds(), LiarPhase.ROLE_REVEAL, now.plusSeconds(ROLE_REVEAL_SECONDS), players, state.words(), state.wordIndex() + 1, bag, hints.randomState(), liar, hints.ids(), 0, Map.of(), Set.of(), Set.of(), Map.of(), Set.of(), false, null);
@@ -266,6 +270,7 @@ public final class LiarGameModule implements GameModule {
     private static Set<ActorId> withoutActor(Set<ActorId> values, ActorId actorId) { return values.stream().filter(id -> !id.equals(actorId)).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)); }
     private static void requireActive(LiarGameState state, ActorId actorId) { if (!activeIds(state).contains(actorId)) throw violation("GAME_ACTION_NOT_ALLOWED"); }
     private static void validateRoster(List<GamePlayer> players) { if (players.size() < GameType.LIAR.minimumParticipants() || players.size() > GameType.LIAR.maximumParticipants()) throw violation("GAME_START_CONDITION_NOT_MET"); var ids = new HashSet<ActorId>(); if (!players.stream().map(GamePlayer::actorId).allMatch(ids::add)) throw violation("GAME_START_CONDITION_NOT_MET"); }
+    private static void validateUniqueRoster(List<GamePlayer> players) { Objects.requireNonNull(players, "players"); if (players.size() > GameType.LIAR.maximumParticipants()) throw violation("GAME_START_CONDITION_NOT_MET"); var ids = new HashSet<ActorId>(); if (!players.stream().map(GamePlayer::actorId).allMatch(ids::add)) throw violation("GAME_START_CONDITION_NOT_MET"); }
     private static LiarGameState liarState(GameState state) { if (!(state instanceof LiarGameState liarState)) throw violation("GAME_STATE_INVALID"); return liarState; }
     private static GameRuleViolation violation(String code) { return new GameRuleViolation(code); }
     private record Shuffle(List<ActorId> ids, long randomState) { }

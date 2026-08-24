@@ -32,3 +32,27 @@
 
 - Cumulative score ownership remains in the existing `GameRuntime`; this task produces only per-transition deltas, as defined by the Task 3 contract. Task 6 is responsible for applying deltas, participant promotion, and session completion.
 - The first Gradle invocation required an approved wrapper download; all recorded test commands subsequently completed successfully.
+
+## Fix Round 1/5
+
+### Changes
+
+- Reject all player actions at or after the authoritative phase deadline, before any phase dispatch or mutation.
+- Preserve `ROUND_RESULT` and `GAME_RESULT` state, outcome, deadline, and scores when a participant departs; the room layer owns its roster removal.
+- Removed player-order host inference from `DISCUSSION_END_PROPOSE`. **Task 6 must authorize the current `Room.hostId` under the room lock before dispatching this action**, including after host transfer.
+- A `ROUND_RESULT` expiry is intentionally inert. Task 6 promotes spectators and must call `synchronizePlayers` with the latest active roster to advance; fewer than four active players produce the terminal `GAME_RESULT` handoff without further score deltas.
+- Added `GameRuntime.synchronizePlayers` so newcomers enter cumulative scoring at zero while departed score entries remain available for final rank calculation.
+- Newcomers participate in the next round roster immediately but are omitted from a nonempty liar bag; they enter candidacy when the bag refills. Departed IDs are filtered out.
+
+### RED/GREEN evidence
+
+- RED: `backend\\.\\gradlew.bat test --tests "com.minigame.platform.game.domain.liar.LiarVotingTest" --tests "com.minigame.platform.game.domain.liar.LiarDepartureTest" --tests "com.minigame.platform.game.domain.GameRuntimeTest"`
+  - Failed before implementation because `GameRuntime.synchronizePlayers` was missing.
+- GREEN (focused): same command — `BUILD SUCCESSFUL`.
+- GREEN (liar package): `backend\\.\\gradlew.bat test --tests "com.minigame.platform.game.domain.liar.*"` — `BUILD SUCCESSFUL`.
+- GREEN (runtime): `backend\\.\\gradlew.bat test --tests "com.minigame.platform.game.domain.GameRuntimeTest"` — `BUILD SUCCESSFUL`.
+- GREEN (backend): `backend\\.\\gradlew.bat test` — `BUILD SUCCESSFUL`.
+
+### Commit
+
+`PENDING_FIX_COMMIT`

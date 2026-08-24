@@ -1,6 +1,8 @@
 package com.minigame.platform.game.domain.liar;
 
 import com.minigame.platform.auth.domain.ActorId;
+import com.minigame.platform.game.domain.GameDeadline;
+import com.minigame.platform.game.domain.GameContent;
 import com.minigame.platform.game.domain.GamePlayer;
 import com.minigame.platform.game.domain.GameSettings;
 import com.minigame.platform.game.domain.GameStartContext;
@@ -52,10 +54,89 @@ class LiarDepartureTest {
         assertThat(((LiarGameState) result.state()).players()).extracting(GamePlayer::actorId).contains(new ActorId("new"));
     }
 
+    @Test
+    void departure_during_round_result_preserves_the_completed_outcome_and_deadline() {
+        var state = roundResult(context(List.of("a", "b", "c", "d"), 2));
+
+        var result = module.removePlayer(state, state.players().getFirst().actorId(), NOW.plusSeconds(1));
+
+        assertThat(result.state()).isSameAs(state);
+        assertThat(result.deadline()).contains(new GameDeadline(state.sessionId(), state.round(), state.phaseVersion(), state.deadlineAt()));
+        assertThat(result.scoreDeltas()).isEmpty();
+    }
+
+    @Test
+    void departure_during_game_result_preserves_the_completed_outcome_and_deadline() {
+        var roundResult = roundResult(context(List.of("a", "b", "c", "d"), 1));
+        var gameResult = (LiarGameState) module.synchronizePlayers(roundResult, roundResult.players(), NOW).state();
+
+        var result = module.removePlayer(gameResult, gameResult.players().getFirst().actorId(), NOW.plusSeconds(1));
+
+        assertThat(gameResult.phase()).isEqualTo(LiarPhase.GAME_RESULT);
+        assertThat(result.state()).isSameAs(gameResult);
+        assertThat(result.scoreDeltas()).isEmpty();
+    }
+
+    @Test
+    void round_result_expiry_requires_synchronized_roster_before_advancing() {
+        var state = roundResult(context(List.of("a", "b", "c", "d"), 2));
+        var deadline = new GameDeadline(state.sessionId(), state.round(), state.phaseVersion(), state.deadlineAt());
+
+        var result = module.expire(state, deadline, deadline.at());
+
+        assertThat(result.state()).isSameAs(state);
+    }
+
+    @Test
+    void synchronized_roster_below_four_hands_off_to_game_result_without_scoring() {
+        var state = roundResult(context(List.of("a", "b", "c", "d"), 2));
+        var remaining = state.players().subList(0, 3);
+
+        var result = module.synchronizePlayers(state, remaining, NOW);
+
+        assertThat(((LiarGameState) result.state()).phase()).isEqualTo(LiarPhase.GAME_RESULT);
+        assertThat(result.scoreDeltas()).isEmpty();
+    }
+
+    @Test
+    void newcomer_is_deferred_from_a_nonempty_liar_bag_then_included_when_it_refills() {
+        var state = roundResult(context(List.of("a", "b", "c", "d"), 2));
+        var players = new java.util.ArrayList<>(state.players());
+        var newcomer = new ActorId("new");
+        players.add(new GamePlayer(newcomer, "new"));
+
+        var deferred = (LiarGameState) module.synchronizePlayers(state, players, NOW).state();
+        assertThat(deferred.players()).extracting(GamePlayer::actorId).contains(newcomer);
+        assertThat(deferred.liarId()).isNotEqualTo(newcomer);
+        assertThat(deferred.liarBag()).doesNotContain(newcomer);
+
+        var refillSource = withEmptyBag(state);
+        var refilled = (LiarGameState) module.synchronizePlayers(refillSource, players, NOW).state();
+        assertThat(refilled.liarId().equals(newcomer) || refilled.liarBag().contains(newcomer)).isTrue();
+    }
+
+    private LiarGameState roundResult(GameStartContext context) {
+        var transition = module.start(context);
+        var state = (LiarGameState) transition.state();
+        while (state.phase() != LiarPhase.VOTING) {
+            transition = module.expire(state, transition.deadline().orElseThrow(), transition.deadline().orElseThrow().at());
+            state = (LiarGameState) transition.state();
+        }
+        transition = module.expire(state, transition.deadline().orElseThrow(), transition.deadline().orElseThrow().at());
+        return (LiarGameState) transition.state();
+    }
+
+    private static LiarGameState withEmptyBag(LiarGameState state) {
+        return new LiarGameState(state.sessionId(), state.round(), state.phaseVersion(), state.totalRounds(), state.actionSeconds(), state.discussionSeconds(), state.phase(), state.deadlineAt(), state.players(), state.words(), state.wordIndex(), List.of(), state.randomState(), state.liarId(), state.hintOrder(), state.hintIndex(), state.hints(), state.discussionEndVotes(), state.discussionEndRespondents(), state.votes(), state.revoteCandidates(), state.liarGuessSubmitted(), state.roundResult());
+    }
+
     private static GameStartContext context(List<String> ids) {
+        return context(ids, 2);
+    }
+
+    private static GameStartContext context(List<String> ids, int rounds) {
         return new GameStartContext(UUID.fromString("00000000-0000-0000-0000-000000005101"),
-                ids.stream().map(id -> new GamePlayer(new ActorId(id), id)).toList(), new GameSettings(2, 20, 60, "all"),
-                List.of(new LiarWord(UUID.randomUUID(), "food", "붕어빵", Set.of("fish bread")),
-                        new LiarWord(UUID.randomUUID(), "animal", "호랑이", Set.of("tiger"))), NOW, new Random(11));
+                ids.stream().map(id -> new GamePlayer(new ActorId(id), id)).toList(), new GameSettings(rounds, 20, 60, "all"),
+                java.util.stream.IntStream.range(0, rounds).<GameContent>mapToObj(index -> new LiarWord(UUID.randomUUID(), "food", "제시어" + index, Set.of("word" + index))).toList(), NOW, new Random(11));
     }
 }
