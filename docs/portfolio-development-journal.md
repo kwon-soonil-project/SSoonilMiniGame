@@ -2143,6 +2143,7 @@ git commit -m "feat: make host control room game start"
 - Create: `backend/src/main/java/com/minigame/platform/game/application/LiarContentPort.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/application/GameSessionPort.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/application/RunningGameSessionRecovery.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameContent.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarWord.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/ContentPackEntity.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/ContentItemEntity.java`
@@ -2226,7 +2227,7 @@ git commit -m "feat: persist liar content and game results"
 
 **Files:**
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GameAction.java`
-- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameContent.java`
+- Modify: `backend/src/main/java/com/minigame/platform/game/domain/GameContent.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GameDeadline.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GameModule.java`
 - Create: `backend/src/main/java/com/minigame/platform/game/domain/GamePlayer.java`
@@ -2498,7 +2499,7 @@ git commit -m "feat: complete liar voting and scoring rules"
 - Test: `backend/src/test/java/com/minigame/platform/room/adapter/in/web/RoomControllerTest.java`
 
 **Interfaces:**
-- Produces: `GameApplicationService.start(ActorPrincipal, RoomId, String requestId): RoomSnapshotView`
+- Produces: `GameApplicationService.start(ActorPrincipal, RoomId, String requestId): void`
 - Produces: `GameApplicationService.act(ActorPrincipal, RoomId, String requestId, String action, Map<String,Object> data): void`
 - Produces: `GameApplicationService.expire(RoomId, GameDeadline): void`
 - Produces: `GameApplicationService.participantLeft(Room, ActorId, Instant): List<GameSignal>` called within the existing room lock.
