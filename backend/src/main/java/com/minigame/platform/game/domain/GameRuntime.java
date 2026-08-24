@@ -4,6 +4,7 @@ import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.room.domain.GameType;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -40,9 +41,14 @@ public final class GameRuntime {
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         this.gameType = Objects.requireNonNull(gameType, "gameType");
         this.state = Objects.requireNonNull(state, "state");
-        Objects.requireNonNull(players, "players").forEach(player ->
-                scores.put(Objects.requireNonNull(player, "player").actorId(), 0)
-        );
+        var playerIds = new HashSet<ActorId>();
+        for (var player : Objects.requireNonNull(players, "players")) {
+            var actorId = Objects.requireNonNull(player, "player").actorId();
+            if (!playerIds.add(actorId)) {
+                throw new IllegalArgumentException("players must have unique actor IDs");
+            }
+            scores.put(actorId, 0);
+        }
         this.usedContentIds.addAll(Objects.requireNonNull(usedContentIds, "usedContentIds"));
     }
 
