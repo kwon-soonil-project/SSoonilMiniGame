@@ -7,7 +7,10 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
+import java.util.Arrays;
 import java.util.UUID;
 
 @Entity
@@ -26,6 +29,10 @@ public class ContentItemEntity {
     @Column(name = "normalized_value", nullable = false)
     private String normalizedValue;
 
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    @Column(nullable = false, columnDefinition = "text[]")
+    private String[] aliases;
+
     @Column(nullable = false)
     private boolean active;
 
@@ -42,6 +49,10 @@ public class ContentItemEntity {
 
     public String getValue() {
         return value;
+    }
+
+    public String[] getAliases() {
+        return Arrays.copyOf(aliases, aliases.length);
     }
 
     public boolean isActive() {

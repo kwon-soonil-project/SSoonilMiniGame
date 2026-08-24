@@ -1,6 +1,7 @@
 package com.minigame.platform.game.adapter.out.persistence;
 
 import com.minigame.platform.game.application.GameSessionPort;
+import com.minigame.platform.game.application.GameSessionNotRunningException;
 import jakarta.persistence.EntityManager;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Repository;
@@ -34,12 +35,22 @@ public class JpaGameSessionAdapter implements GameSessionPort {
     @Override
     @Transactional
     public void complete(UUID sessionId, List<GameParticipantResult> results, Instant endedAt) {
-        var session = entityManager().find(GameSessionEntity.class, sessionId);
-        if (session == null) {
-            throw new IllegalArgumentException("Unknown game session: " + sessionId);
+        var entityManager = entityManager();
+        var transitioned = entityManager.createQuery("""
+                        update GameSessionEntity session
+                           set session.status = 'COMPLETED',
+                               session.endedAt = :endedAt
+                         where session.id = :sessionId
+                           and session.status = 'RUNNING'
+                        """)
+                .setParameter("endedAt", endedAt)
+                .setParameter("sessionId", sessionId)
+                .executeUpdate();
+        if (transitioned != 1) {
+            throw new GameSessionNotRunningException(sessionId);
         }
-        session.complete(endedAt);
-        results.forEach(result -> entityManager().persist(GameParticipantEntity.from(
+        var session = entityManager.getReference(GameSessionEntity.class, sessionId);
+        results.forEach(result -> entityManager.persist(GameParticipantEntity.from(
                 session,
                 result.actorId(),
                 result.nickname(),

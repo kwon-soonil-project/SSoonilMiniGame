@@ -9,6 +9,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Arrays;
 import java.util.Set;
 import java.util.UUID;
 
@@ -31,7 +32,12 @@ public class JpaLiarContentAdapter implements LiarContentPort {
         var query = candidates(categoryCode, excludedIds);
         query.setMaxResults(limit);
         return query.getResultList().stream()
-                .map(item -> new LiarWord(item.getId(), item.getContentPack().getCode(), item.getValue(), Set.of()))
+                .map(item -> new LiarWord(
+                        item.getId(),
+                        item.getContentPack().getCode(),
+                        item.getValue(),
+                        Set.copyOf(Arrays.asList(item.getAliases()))
+                ))
                 .toList();
     }
 
