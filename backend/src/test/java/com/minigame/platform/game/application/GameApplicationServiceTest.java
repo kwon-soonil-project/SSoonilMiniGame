@@ -9,6 +9,8 @@ import com.minigame.platform.game.domain.liar.LiarGameState;
 import com.minigame.platform.game.domain.liar.LiarPhase;
 import com.minigame.platform.game.domain.liar.LiarWord;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
+import com.minigame.platform.room.application.ChatPolicy;
+import com.minigame.platform.room.application.RoomApplicationService;
 import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomFixture;
 import com.minigame.platform.room.domain.RoomId;
@@ -16,12 +18,15 @@ import com.minigame.platform.shared.realtime.EventEnvelope;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -302,27 +307,31 @@ class GameApplicationServiceTest {
     }
 
     @Test
-    void start_scheduler_failure_interrupts_only_new_session_and_same_request_can_retry() {
+    void start_scheduler_failure_creates_no_session_and_same_request_can_retry() {
         scheduler.failNext = true;
 
         assertThatThrownBy(() -> service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST))
                 .isInstanceOf(IllegalStateException.class).hasMessage("schedule failed");
         assertThat(snapshot().gameRuntime()).isEmpty();
-        assertThat(sessions.interrupted).containsExactly(sessions.started.getFirst().sessionId());
+        assertThat(sessions.started).isEmpty();
+        assertThat(sessions.interrupted).isEmpty();
 
         service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
         assertThat(snapshot().gameRuntime()).isPresent();
-        assertThat(sessions.started).hasSize(2);
+        assertThat(sessions.started).hasSize(1);
     }
 
     @Test
     void start_session_failure_leaves_room_unstarted_and_same_request_can_retry() {
         sessions.failStart = true;
+        sessions.failInterrupt = true;
 
         assertThatThrownBy(() -> service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST))
                 .isInstanceOf(IllegalStateException.class).hasMessage("start failed");
         assertThat(snapshot().gameRuntime()).isEmpty();
         assertThat(scheduler.active()).isNull();
+        assertThat(scheduler.scheduled).singleElement().matches(task -> task.cancelled);
+        assertThat(sessions.interrupted).isEmpty();
 
         service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
         assertThat(snapshot().gameRuntime()).isPresent();
@@ -401,17 +410,18 @@ class GameApplicationServiceTest {
         clock.set(roundResult.deadlineAt());
         scheduler.failNext = true;
 
-        assertThatThrownBy(() -> service.expire(RoomFixture.ROOM_ID, deadline(roundResult)))
-                .isInstanceOf(IllegalStateException.class).hasMessage("schedule failed");
+        oldSchedule.fire();
+        assertThat(oldSchedule.failures).isEqualTo(1);
         assertThat(state()).isEqualTo(roundResult);
         assertThat(oldSchedule.cancelled).isFalse();
         assertThat(snapshot().participants())
                 .filteredOn(participant -> participant.actorId().equals(spectator))
                 .allMatch(participant -> participant.spectator());
 
-        service.expire(RoomFixture.ROOM_ID, deadline(roundResult));
+        oldSchedule.fire();
         assertThat(state().round()).isEqualTo(2);
         assertThat(state().players()).extracting(player -> player.actorId()).contains(spectator);
+        assertThat(oldSchedule.cancelled).isTrue();
     }
 
     @Test
@@ -423,15 +433,16 @@ class GameApplicationServiceTest {
         clock.set(roundResult.deadlineAt());
         scheduler.failNext = true;
 
-        assertThatThrownBy(() -> service.expire(RoomFixture.ROOM_ID, deadline(roundResult)))
-                .isInstanceOf(IllegalStateException.class).hasMessage("schedule failed");
+        oldSchedule.fire();
+        assertThat(oldSchedule.failures).isEqualTo(1);
         assertThat(state()).isEqualTo(roundResult);
         assertThat(sessions.completed).isEmpty();
         assertThat(oldSchedule.cancelled).isFalse();
 
-        service.expire(RoomFixture.ROOM_ID, deadline(roundResult));
+        oldSchedule.fire();
         assertThat(state().phase()).isEqualTo(LiarPhase.GAME_RESULT);
         assertThat(sessions.completed).hasSize(1);
+        assertThat(oldSchedule.cancelled).isTrue();
     }
 
     @Test
@@ -443,14 +454,15 @@ class GameApplicationServiceTest {
         clock.set(roundResult.deadlineAt());
         sessions.failComplete = true;
 
-        assertThatThrownBy(() -> service.expire(RoomFixture.ROOM_ID, deadline(roundResult)))
-                .isInstanceOf(IllegalStateException.class).hasMessage("complete failed");
+        oldSchedule.fire();
+        assertThat(oldSchedule.failures).isEqualTo(1);
         assertThat(state()).isEqualTo(roundResult);
         assertThat(oldSchedule.cancelled).isFalse();
 
-        service.expire(RoomFixture.ROOM_ID, deadline(roundResult));
+        oldSchedule.fire();
         assertThat(state().phase()).isEqualTo(LiarPhase.GAME_RESULT);
         assertThat(sessions.completed).hasSize(1);
+        assertThat(oldSchedule.cancelled).isTrue();
     }
 
     @Test
@@ -579,12 +591,108 @@ class GameApplicationServiceTest {
         assertThat(activeSchedule.cancelled).isTrue();
     }
 
+    @Test
+    void real_close_removes_room_despite_room_and_lobby_publication_failures() {
+        service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
+        var gameSessionId = state().sessionId();
+        var unrelatedSessionId = UUID.randomUUID();
+        sessions.start(new GameSessionPort.StartGameSession(
+                unrelatedSessionId, UUID.randomUUID(),
+                com.minigame.platform.room.domain.GameType.LIAR, "{}", clock.instant()
+        ));
+        var roomService = roomService();
+        leaveGuests(roomService);
+        var activeSchedule = scheduler.active();
+        publisher.failPublic = true;
+        publisher.failLobby = true;
+
+        assertThatCode(() -> roomService.leave(
+                HOST, RoomFixture.ROOM_ID, RoomFixture.requestId("real-close-publisher-failure")
+        )).doesNotThrowAnyException();
+
+        assertThat(rooms.findById(RoomFixture.ROOM_ID)).isEmpty();
+        assertThat(sessions.interrupted).containsExactly(gameSessionId);
+        assertThat(sessions.running).contains(unrelatedSessionId).doesNotContain(gameSessionId);
+        assertThat(activeSchedule.cancelled).isTrue();
+        assertThat(publisher.failPublic).isFalse();
+        assertThat(publisher.failLobby).isFalse();
+    }
+
+    @Test
+    void real_close_interrupt_failure_leaves_request_unconsumed_for_clean_retry() {
+        service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
+        var gameSessionId = state().sessionId();
+        var roomService = roomService();
+        leaveGuests(roomService);
+        var activeSchedule = scheduler.active();
+        var requestId = RoomFixture.requestId("real-close-interrupt-retry");
+        sessions.failInterrupt = true;
+
+        assertThatThrownBy(() -> roomService.leave(HOST, RoomFixture.ROOM_ID, requestId))
+                .isInstanceOf(IllegalStateException.class).hasMessage("interrupt failed");
+        assertThat(rooms.findById(RoomFixture.ROOM_ID)).isPresent();
+        assertThat(sessions.running).contains(gameSessionId);
+        assertThat(activeSchedule.cancelled).isFalse();
+
+        roomService.leave(HOST, RoomFixture.ROOM_ID, requestId);
+        assertThat(rooms.findById(RoomFixture.ROOM_ID)).isEmpty();
+        assertThat(sessions.interrupted).containsExactly(gameSessionId);
+        assertThat(activeSchedule.cancelled).isTrue();
+    }
+
+    @Test
+    void real_close_cancel_failure_leaves_request_unconsumed_for_clean_retry() {
+        service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
+        var gameSessionId = state().sessionId();
+        var roomService = roomService();
+        leaveGuests(roomService);
+        var activeSchedule = scheduler.active();
+        var requestId = RoomFixture.requestId("real-close-cancel-retry");
+        scheduler.failCancelNext = true;
+
+        assertThatThrownBy(() -> roomService.leave(HOST, RoomFixture.ROOM_ID, requestId))
+                .isInstanceOf(IllegalStateException.class).hasMessage("cancel failed");
+        assertThat(rooms.findById(RoomFixture.ROOM_ID)).isPresent();
+        assertThat(activeSchedule.cancelled).isFalse();
+
+        roomService.leave(HOST, RoomFixture.ROOM_ID, requestId);
+        assertThat(rooms.findById(RoomFixture.ROOM_ID)).isEmpty();
+        assertThat(sessions.interrupted).containsExactly(gameSessionId);
+        assertThat(activeSchedule.cancelled).isTrue();
+    }
+
     private void advanceToVoting() {
         advanceToDiscussion();
         var discussing = state();
         clock.set(discussing.deadlineAt());
         service.expire(RoomFixture.ROOM_ID, deadline(discussing));
         assertThat(state().phase()).isEqualTo(LiarPhase.VOTING);
+    }
+
+    private RoomApplicationService roomService() {
+        return new RoomApplicationService(
+                rooms,
+                new PlainPasswordEncoder(),
+                publisher,
+                clock,
+                new ChatPolicy(clock),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        clock, Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                service
+        );
+    }
+
+    private void leaveGuests(RoomApplicationService roomService) {
+        for (var guest : List.of(RoomFixture.GUEST_1, RoomFixture.GUEST_2, RoomFixture.GUEST_3)) {
+            roomService.leave(
+                    principal(guest), RoomFixture.ROOM_ID,
+                    RoomFixture.requestId("real-close-leave-" + guest.value())
+            );
+        }
+        assertThat(snapshot().participants()).singleElement()
+                .extracting(participant -> participant.actorId()).isEqualTo(RoomFixture.HOST);
     }
 
     private void moveToRoundResultWithThreePlayers() {
@@ -679,8 +787,10 @@ class GameApplicationServiceTest {
         private final List<UUID> completed = new ArrayList<>();
         private final List<List<GameParticipantResult>> results = new ArrayList<>();
         private final List<UUID> interrupted = new ArrayList<>();
+        private final Set<UUID> running = new HashSet<>();
         private boolean failStart;
         private boolean failComplete;
+        private boolean failInterrupt;
 
         private RecordingSessions(List<String> operations) {
             this.operations = operations;
@@ -694,6 +804,7 @@ class GameApplicationServiceTest {
                 throw new IllegalStateException("start failed");
             }
             started.add(command);
+            running.add(command.sessionId());
             return command.sessionId();
         }
 
@@ -704,11 +815,19 @@ class GameApplicationServiceTest {
                 throw new IllegalStateException("complete failed");
             }
             completed.add(sessionId);
+            running.remove(sessionId);
             this.results.add(List.copyOf(results));
         }
 
         @Override
         public boolean interrupt(UUID sessionId, Instant interruptedAt) {
+            if (failInterrupt) {
+                failInterrupt = false;
+                throw new IllegalStateException("interrupt failed");
+            }
+            if (!running.remove(sessionId)) {
+                return false;
+            }
             interrupted.add(sessionId);
             return true;
         }
@@ -725,6 +844,7 @@ class GameApplicationServiceTest {
         private final List<PrivateDelivery> privateEvents = new ArrayList<>();
         private final List<EventEnvelope<?>> lobbyEvents = new ArrayList<>();
         private boolean failPublic;
+        private boolean failLobby;
 
         private RecordingPublisher(List<String> operations) {
             this.operations = operations;
@@ -748,6 +868,10 @@ class GameApplicationServiceTest {
 
         @Override
         public void publishLobby(EventEnvelope<?> event) {
+            if (failLobby) {
+                failLobby = false;
+                throw new IllegalStateException("lobby publisher failed");
+            }
             lobbyEvents.add(event);
         }
 
@@ -793,6 +917,7 @@ class GameApplicationServiceTest {
         private final GameDeadline deadline;
         private final Runnable callback;
         private boolean cancelled;
+        private int failures;
 
         private Scheduled(RoomId roomId, GameDeadline deadline, Runnable callback) {
             this.roomId = roomId;
@@ -806,6 +931,17 @@ class GameApplicationServiceTest {
 
         Runnable callback() {
             return callback;
+        }
+
+        void fire() {
+            if (cancelled) {
+                return;
+            }
+            try {
+                callback.run();
+            } catch (RuntimeException exception) {
+                failures++;
+            }
         }
     }
 
@@ -833,6 +969,18 @@ class GameApplicationServiceTest {
         @Override
         public Instant instant() {
             return instant;
+        }
+    }
+
+    private static final class PlainPasswordEncoder implements PasswordEncoder {
+        @Override
+        public String encode(CharSequence rawPassword) {
+            return rawPassword.toString();
+        }
+
+        @Override
+        public boolean matches(CharSequence rawPassword, String encodedPassword) {
+            return rawPassword.toString().equals(encodedPassword);
         }
     }
 }

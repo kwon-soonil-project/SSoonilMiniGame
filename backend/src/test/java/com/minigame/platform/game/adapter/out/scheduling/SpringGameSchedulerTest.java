@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class SpringGameSchedulerTest {
     private static final RoomId ROOM_ID = new RoomId(UUID.fromString("00000000-0000-0000-0000-000000003101"));
@@ -34,6 +35,7 @@ class SpringGameSchedulerTest {
         gameScheduler.schedule(ROOM_ID, deadline, () -> { });
 
         assertThat(scheduler.scheduledAt()).containsExactly(deadline.at());
+        assertThat(scheduler.delays()).containsExactly(Duration.ofSeconds(1));
     }
 
     @Test
@@ -67,6 +69,29 @@ class SpringGameSchedulerTest {
         assertThat(callbacks).containsExactly("replacement");
     }
 
+    @Test
+    void callback_failure_is_contained_and_the_same_deadline_retries_until_cancelled() {
+        var scheduler = new RecordingTaskScheduler();
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var deadline = new GameDeadline(SESSION_ID, 1, 1, Instant.parse("2026-08-24T00:00:10Z"));
+        var gameScheduler = new SpringGameScheduler(
+                scheduler, Clock.fixed(Instant.parse("2026-08-24T00:00:00Z"), ZoneOffset.UTC)
+        );
+
+        var cancellation = gameScheduler.schedule(ROOM_ID, deadline, () -> {
+            if (attempts.incrementAndGet() == 1) {
+                throw new IllegalStateException("transient expiry failure");
+            }
+        });
+
+        assertThatCode(scheduler::runScheduledCallbacks).doesNotThrowAnyException();
+        assertThatCode(scheduler::runScheduledCallbacks).doesNotThrowAnyException();
+        assertThat(attempts).hasValue(2);
+        cancellation.cancel();
+        scheduler.runScheduledCallbacks();
+        assertThat(attempts).hasValue(2);
+    }
+
     private static final class RecordingTaskScheduler implements TaskScheduler {
         private final List<ScheduledTask> scheduled = new ArrayList<>();
 
@@ -74,8 +99,14 @@ class SpringGameSchedulerTest {
             return scheduled.stream().map(ScheduledTask::at).toList();
         }
 
+        List<Duration> delays() {
+            return scheduled.stream().map(ScheduledTask::delay).toList();
+        }
+
         void runScheduledCallbacks() {
-            scheduled.forEach(task -> task.callback().run());
+            scheduled.stream()
+                    .filter(task -> !task.future().isCancelled())
+                    .forEach(task -> task.callback().run());
         }
 
         @Override
@@ -85,9 +116,7 @@ class SpringGameSchedulerTest {
 
         @Override
         public ScheduledFuture<?> schedule(Runnable task, Instant startTime) {
-            var future = new RecordingFuture();
-            scheduled.add(new ScheduledTask(startTime, task, future));
-            return future;
+            throw new UnsupportedOperationException();
         }
 
         @Override
@@ -102,7 +131,9 @@ class SpringGameSchedulerTest {
 
         @Override
         public ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, Instant startTime, Duration delay) {
-            throw new UnsupportedOperationException();
+            var future = new RecordingFuture();
+            scheduled.add(new ScheduledTask(startTime, delay, task, future));
+            return future;
         }
 
         @Override
@@ -111,7 +142,7 @@ class SpringGameSchedulerTest {
         }
     }
 
-    private record ScheduledTask(Instant at, Runnable callback, RecordingFuture future) {
+    private record ScheduledTask(Instant at, Duration delay, Runnable callback, RecordingFuture future) {
     }
 
     private static final class RecordingFuture implements ScheduledFuture<Object> {

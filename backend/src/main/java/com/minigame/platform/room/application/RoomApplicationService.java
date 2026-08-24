@@ -20,6 +20,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.util.ArrayDeque;
@@ -35,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class RoomApplicationService {
+    private static final Logger log = LoggerFactory.getLogger(RoomApplicationService.class);
     private static final int DEFAULT_ROUNDS = 3;
     private static final int DEFAULT_ACTION_SECONDS = 30;
     private static final int DEFAULT_DISCUSSION_SECONDS = 90;
@@ -338,13 +341,13 @@ public class RoomApplicationService {
                 }
             }
             var events = room.leave(actor.actorId(), requestId);
-            publishRoomEvents(roomId, actor, requestId, events);
+            safePublish(() -> publishRoomEvents(roomId, actor, requestId, events));
             if (!events.isEmpty()) {
                 var snapshot = room.snapshot();
                 if (snapshot.status() == RoomStatus.CLOSED) {
-                    publishLobbyRemove(snapshot, actor, requestId);
+                    safePublish(() -> publishLobbyRemove(snapshot, actor, requestId));
                 } else {
-                    publishLobbyUpsert(snapshot, actor, requestId);
+                    safePublish(() -> publishLobbyUpsert(snapshot, actor, requestId));
                 }
             }
             return events;
@@ -586,6 +589,14 @@ public class RoomApplicationService {
             }
             publication.run();
             lobbyPublishedSequences.put(roomId, sequence);
+        }
+    }
+
+    private void safePublish(Runnable publication) {
+        try {
+            publication.run();
+        } catch (RuntimeException exception) {
+            log.warn("Best-effort room leave publication failed; snapshots remain authoritative", exception);
         }
     }
 

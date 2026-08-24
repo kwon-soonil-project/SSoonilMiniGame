@@ -140,40 +140,24 @@ public class GameApplicationService {
                         selected.stream().map(GameContent::id).toList()
                 );
                 runtime.applyScoreDeltas(transition.scoreDeltas());
-                var persistedId = sessions.start(new GameSessionPort.StartGameSession(
-                        sessionId,
-                        roomId.value(),
-                        GameType.LIAR,
-                        settingsJson(gameSettings),
-                        clock.instant()
-                ));
-                if (!sessionId.equals(persistedId)) {
-                    sessions.interrupt(sessionId, clock.instant());
-                    throw new IllegalStateException("Game session persistence changed the session ID");
-                }
-                PreparedSchedule prepared;
+                var prepared = prepareSchedule(roomId, transition.deadline());
                 try {
-                    prepared = prepareSchedule(roomId, transition.deadline());
-                } catch (RuntimeException exception) {
-                    sessions.interrupt(sessionId, clock.instant());
-                    throw exception;
-                }
-                try {
-                    var events = room.startGame(actor.actorId(), requestId, expected, runtime);
-                    if (events.isEmpty()) {
-                        prepared.cancel();
-                        sessions.interrupt(sessionId, clock.instant());
-                        return null;
-                    }
-                    commitSchedule(roomId, prepared);
-                    publishGameState(room, actor, requestId, events.getLast().sequence());
-                    publishLobbyUpsert(room.snapshot(), actor, requestId);
-                    return null;
+                    sessions.start(new GameSessionPort.StartGameSession(
+                            sessionId,
+                            roomId.value(),
+                            GameType.LIAR,
+                            settingsJson(gameSettings),
+                            clock.instant()
+                    ));
                 } catch (RuntimeException exception) {
                     prepared.cancel();
-                    sessions.interrupt(sessionId, clock.instant());
                     throw exception;
                 }
+                var events = room.startGame(actor.actorId(), requestId, expected, runtime);
+                commitSchedule(roomId, prepared);
+                publishGameState(room, actor, requestId, events.getLast().sequence());
+                publishLobbyUpsert(room.snapshot(), actor, requestId);
+                return null;
             });
         } finally {
             startingRequests.remove(startRequest);
