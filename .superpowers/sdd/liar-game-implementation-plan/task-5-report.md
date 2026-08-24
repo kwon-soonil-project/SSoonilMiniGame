@@ -55,4 +55,4 @@
 
 ### Commit
 
-`PENDING_FIX_COMMIT`
+`26a9eb3` (`fix: harden liar game phase boundaries`)
