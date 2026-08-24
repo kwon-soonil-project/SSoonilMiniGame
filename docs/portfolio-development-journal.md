@@ -1836,6 +1836,7 @@ ROLE_REVEAL(5초)
 - 시민은 카테고리와 제시어를 받고 라이어는 카테고리만 받는다.
 - 같은 게임 세션에서 제시어를 중복하지 않는다.
 - 방 메모리에 최근 사용 제시어 20개를 보관해 다음 게임에서도 가능한 한 피한다. 선택 범위가 부족하면 세션 내 중복 금지를 우선하고 최근 기록 회피만 완화한다.
+- 라운드 사이에 승격된 참가자는 즉시 활성 명단과 0점 공동 순위에 들어가지만, 진행 중인 라이어 셔플 백에는 끼워 넣지 않고 다음 재충전부터 후보가 된다. 이탈자는 즉시 백에서 제거한다.
 
 ### 힌트
 
@@ -1849,6 +1850,7 @@ ROLE_REVEAL(5초)
 - 방장만 조기 종료를 제안할 수 있다.
 - 제안 자체를 방장의 찬성 한 표로 계산한다.
 - 활성 참가자 과반수가 찬성하면 즉시 투표로 이동한다. 과반수는 `floor(activePlayers / 2) + 1`이다.
+- 방장 여부는 참가자 배열 순서로 추정하지 않고, 방별 잠금 안에서 현재 `Room.hostId`와 명령 actor를 비교한다. 게임 중 방장 위임도 다음 명령부터 즉시 반영한다.
 - 토론이 시간 만료로 종료되거나 단계가 바뀌면 제안과 찬성 상태를 폐기한다.
 
 ### 투표와 재투표
@@ -1882,6 +1884,8 @@ ROLE_REVEAL(5초)
 ## 7. 타이머와 동시성
 
 각 시간 제한 단계는 서버의 절대 `deadline`과 증가하는 단계 버전을 저장한다. 클라이언트는 `deadline`으로 남은 시간을 표시하지만 0초에 임의로 상태를 전환하지 않는다. 예약 작업은 서버를 깨우는 수단일 뿐이며 실행 시 방별 잠금 안에서 세션 ID, 라운드, 단계 버전과 현재 시각을 다시 확인한다. 이미 제출로 조기 전환됐거나 이전 라운드에서 늦게 실행된 콜백은 아무 작업도 하지 않는다.
+
+행동 처리도 현재 시각이 마감시각과 같거나 지난 경우 거절해 예약 콜백과 사용자 명령의 잠금 획득 순서에 따라 판정이 달라지지 않게 한다. `ROUND_RESULT` 이후 진행은 저장된 과거 명단으로 자동 전환하지 않고, 관전자 승격까지 반영한 최신 활성 명단을 동기화한 경우에만 수행한다. 최신 명단이 4명 미만이면 다음 라운드를 시작하지 않고 최종 결과로 종료한다.
 
 모든 사용자 명령은 UUID `requestId`로 멱등 처리한다. 상태 변경, 이벤트 순번 증가, 다음 마감 예약 지시를 하나의 도메인 결과로 만든 뒤 응용 서비스가 이벤트를 전송한다.
 
@@ -1993,6 +1997,10 @@ Flyway 마이그레이션으로 `content_packs`, `content_items`, `game_sessions
 | ADR-132 | 2026-08-24 | 공통 `GAME_ACTION` 봉투를 게임 모듈별 행동으로 분배 | 새 게임 추가 시 방 WebSocket 경계를 바꾸지 않기 위해 | 설계 확정 |
 | ADR-133 | 2026-08-24 | 같은 방 URL과 채팅 연결을 게임 전후에 유지 | 화면 전환 중 대화와 연결 문맥이 끊기지 않게 하기 위해 | 설계 확정 |
 | ADR-134 | 2026-08-24 | 네 브라우저 E2E와 비밀 정보 누출 검증을 완료 조건에 포함 | 멀티플레이 동기화와 보안 경계를 실제 사용 흐름에서 입증하기 위해 | 설계 확정 |
+| ADR-135 | 2026-08-25 | 토론 종료 과반수는 `floor(activePlayers / 2) + 1`로 고정 | 4명일 때 2표로 끝난다는 예시보다 엄격 과반 공식이 공정성 의도와 일치하기 때문에 | 구현 확정 |
+| ADR-136 | 2026-08-25 | 토론 종료 제안 권한은 방 잠금 안에서 현재 `Room.hostId`로 검증 | 참가자 순서 추정을 제거하고 게임 중 방장 위임을 즉시 반영하기 위해 | 구현 확정 |
+| ADR-137 | 2026-08-25 | 새 활성 참가자는 즉시 0점으로 등록하되 라이어 후보는 다음 셔플 백 재충전부터 포함 | 기존 참가자의 1회씩 역할 기회를 보존하면서 중도 합류를 지원하기 위해 | 구현 확정 |
+| ADR-138 | 2026-08-25 | 마감 이후 행동을 거절하고 다음 라운드는 최신 명단 동기화로만 진행 | 타이머 경쟁 판정과 관전자 승격 누락, 4명 미만 재시작을 방지하기 위해 | 구현 확정 |
 
 ---
 
@@ -2434,6 +2442,8 @@ void host_proposal_counts_as_yes_and_majority_ends_discussion() {
     state = apply(state, host, "DISCUSSION_END_PROPOSE", Map.of());
     assertThat(state.discussionEndVotes()).containsExactly(host);
     state = apply(state, player2, "DISCUSSION_END_VOTE", Map.of("agree", true));
+    assertThat(state.phase()).isEqualTo(LiarPhase.DISCUSSION);
+    state = apply(state, player3, "DISCUSSION_END_VOTE", Map.of("agree", true));
     assertThat(state.phase()).isEqualTo(LiarPhase.VOTING);
 }
 
@@ -2448,7 +2458,7 @@ void one_tie_revote_then_second_tie_means_liar_survives() {
 }
 ```
 
-이와 함께 전체 기권, 라이어 지목 후 정답 성공 2점, 실패 시 시민 각 1점, 라이어 이탈, 시민 이탈, 4명 미만 무효 라운드, 다음 라운드에 합류한 새 참가자의 0점 시작과 역할 후보 포함을 각각 독립 테스트로 작성한다.
+이와 함께 전체 기권, 라이어 지목 후 정답 성공 2점, 실패 시 시민 각 1점, 라이어 이탈, 시민 이탈, 4명 미만 무효 라운드, 다음 라운드에 합류한 새 참가자의 0점 시작과 다음 셔플 백 재충전부터의 역할 후보 포함을 각각 독립 테스트로 작성한다.
 
 - [ ] **Step 2: 투표 테스트를 실행해 미구현 단계로 실패 확인**
 
@@ -2466,7 +2476,7 @@ Expected: FAIL on the first unsupported action.
 
 - [ ] **Step 5: 이탈과 라운드/게임 결과 자동 전환 구현**
 
-라이어 이탈 또는 남은 활성 참가자 4명 미만은 `invalidated=true` 결과를 만들고 점수를 바꾸지 않는다. `ROUND_RESULT`은 8초, `GAME_RESULT`는 60초 마감시각을 사용한다. 마지막 라운드가 아니면 `synchronizePlayers`로 전달받은 최신 활성 참가자를 반영한다. 새 참가자는 0점으로 추가하고 셔플 백 후보에 포함하며 떠난 참가자는 이후 역할 후보에서 제거한다.
+라이어 이탈 또는 남은 활성 참가자 4명 미만은 `invalidated=true` 결과를 만들고 점수를 바꾸지 않는다. `ROUND_RESULT`은 8초, `GAME_RESULT`는 60초 마감시각을 사용한다. 결과 단계의 이탈은 확정된 결과·단계·마감시각을 다시 쓰지 않는다. 마지막 라운드가 아니면 `synchronizePlayers`로 전달받은 최신 활성 참가자를 반영하고, 4명 미만이면 다음 라운드 대신 `GAME_RESULT`로 끝낸다. `GameRuntime.synchronizePlayers`는 새 참가자를 0점으로 추가하면서 이탈자의 누적 결과를 보존한다. 새 참가자는 현재 비어 있지 않은 라이어 백에는 추가하지 않고 다음 재충전부터 포함하며, 떠난 참가자는 즉시 후보에서 제거한다.
 
 - [ ] **Step 6: 라이어 전체 도메인 테스트 통과 확인**
 
@@ -2534,6 +2544,8 @@ Expected: FAIL because `GAME_START`, `GAME_ACTION` and game projections are unsu
 `Room`은 `Optional<GameRuntime>`과 게임 간 최근 콘텐츠 ID 최대 20개를 보유하고 스냅샷에 런타임을 포함한다. `startGame`, `replaceGame`, `finishGame`에서 상태 조건과 요청 ID를 검증하며 `finishGame`은 이번 세션 콘텐츠를 최근 기록으로 옮긴다. `ActiveRoomRepository`에 `<T> LockedRoomResult<T> withRoomValue(RoomId, Function<Room,T>)`를 추가하고 `LockedRoomResult<T>`는 `T value`, `Room.Snapshot snapshot`을 가진다. 게임 시작, 행동, 시간 만료와 참가자 퇴장을 이 동일한 방 잠금 경계에서 처리한다.
 
 게임 시작은 `RoomStatus.PLAYING`, 최종 대기방 복귀는 `RoomStatus.WAITING`으로 바꾸고 로비 upsert를 발행한다. `PLAYING` 방에 입장한 사용자는 `spectator=true`로 추가한다. 다음 `ROUND_RESULT` 만료 시 빈 활성 슬롯만큼 입장 순서대로 `spectator=false`로 승격해 `PLAYER_SPECTATOR_CHANGED`를 먼저 발행하고, 최신 활성 명단을 `GameModule.synchronizePlayers`에 전달한 뒤 새 역할을 배정한다. 마지막 라운드의 `GAME_RESULT`에서는 승격하지 않고 다음 게임까지 관전 상태를 유지한다.
+
+`DISCUSSION_END_PROPOSE`는 게임 모듈에 전달하기 전에 같은 방 잠금 안에서 명령 actor와 현재 `Room.hostId`가 같은지 검사한다. 참가자 배열의 첫 원소를 방장으로 취급하지 않으며, 게임 중 방장 위임 뒤에는 새 방장만 제안할 수 있다. `ROUND_RESULT` 만료는 일반 `GameModule.expire`로 다음 라운드를 열지 않고, 위 승격 및 `GameRuntime.synchronizePlayers`를 적용한 뒤 `GameModule.synchronizePlayers`를 호출한다.
 
 - [ ] **Step 4: 게임 시작·행동·만료 조정 구현**
 
