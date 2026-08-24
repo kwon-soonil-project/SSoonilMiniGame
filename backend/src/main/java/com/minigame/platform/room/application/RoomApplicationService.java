@@ -592,10 +592,12 @@ public class RoomApplicationService {
             );
             case RoomEvent.HostTransferred transferred -> Map.of(
                     "previousHostId", transferred.previousHostId().value(),
-                    "newHostId", transferred.newHostId().value()
+                    "newHostId", transferred.newHostId().value(),
+                    "canStart", transferred.canStart()
             );
             case RoomEvent.ParticipantLeft left -> Map.of(
-                    "actorId", left.actorId().value()
+                    "actorId", left.actorId().value(),
+                    "canStart", left.canStart()
             );
             case RoomEvent.RoomClosed ignored -> Map.of();
             case RoomEvent.ChatAccepted ignored -> Map.of();

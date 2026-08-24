@@ -19,6 +19,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -208,6 +209,25 @@ class RoomApplicationServiceTest {
         }
 
         assertThat(service.snapshot(HOST, roomId).canStart()).isTrue();
+    }
+
+    @Test
+    void leavePublishesTheFreshStartEligibilityInItsPublicPayload() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var service = new RoomApplicationService(repository, new TestPasswordEncoder(), publisher, Clock.systemUTC());
+        var created = service.create(HOST, "퇴장 준비 상태 방", Visibility.PUBLIC, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var guest = ActorPrincipal.guest(new ActorId("leaving-guest"), "나가는 참가자");
+        service.join(guest, new RoomCode(created.code()), null, "00000000-0000-0000-0000-000000008041");
+        publisher.publicEvents.clear();
+
+        service.leave(guest, roomId, "00000000-0000-0000-0000-000000008042");
+
+        assertThat(publisher.publicEvents).singleElement().satisfies(event -> {
+            assertThat(event.type()).isEqualTo("PLAYER_LEFT");
+            assertThat(event.payload()).isEqualTo(Map.of("actorId", "leaving-guest", "canStart", false));
+        });
     }
 
     private static class DelegatingRepository implements ActiveRoomRepository {

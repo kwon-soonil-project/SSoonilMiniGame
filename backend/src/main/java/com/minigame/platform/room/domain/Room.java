@@ -141,9 +141,12 @@ public final class Room {
         }
         var previousHostId = hostId;
         hostId = nextHostId;
+        clearReadiness(nextHostId);
         return complete(
             request,
-            List.of(new RoomEvent.HostTransferred(nextSequence(), previousHostId, nextHostId))
+            List.of(new RoomEvent.HostTransferred(
+                nextSequence(), previousHostId, nextHostId, participantsReadyToStart()
+            ))
         );
     }
 
@@ -156,8 +159,8 @@ public final class Room {
         requireParticipant(actorId);
         participants.remove(actorId);
         var events = new ArrayList<RoomEvent>();
-        events.add(new RoomEvent.ParticipantLeft(nextSequence(), actorId));
         if (participants.isEmpty()) {
+            events.add(new RoomEvent.ParticipantLeft(nextSequence(), actorId, participantsReadyToStart()));
             status = RoomStatus.CLOSED;
             events.add(new RoomEvent.RoomClosed(nextSequence()));
             return complete(request, events);
@@ -167,13 +170,18 @@ public final class Room {
                 .filter(participant -> !participant.spectator())
                 .findFirst();
             if (replacement.isEmpty()) {
+                events.add(new RoomEvent.ParticipantLeft(nextSequence(), actorId, participantsReadyToStart()));
                 status = RoomStatus.CLOSED;
                 events.add(new RoomEvent.RoomClosed(nextSequence()));
                 return complete(request, events);
             }
             hostId = replacement.orElseThrow().actorId();
-            events.add(new RoomEvent.HostTransferred(nextSequence(), actorId, hostId));
+            clearReadiness(hostId);
+            events.add(new RoomEvent.ParticipantLeft(nextSequence(), actorId, participantsReadyToStart()));
+            events.add(new RoomEvent.HostTransferred(nextSequence(), actorId, hostId, participantsReadyToStart()));
+            return complete(request, events);
         }
+        events.add(new RoomEvent.ParticipantLeft(nextSequence(), actorId, participantsReadyToStart()));
         return complete(request, events);
     }
 
@@ -262,6 +270,11 @@ public final class Room {
         participants.replaceAll((actorId, participant) -> actorId.equals(hostId)
             ? participant
             : participant.withReady(false));
+    }
+
+    private void clearReadiness(ActorId actorId) {
+        var participant = requireParticipant(actorId);
+        participants.put(actorId, participant.withReady(false));
     }
 
     private long nextSequence() {

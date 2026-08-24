@@ -14,10 +14,10 @@ public sealed interface RoomEvent {
     record SettingsUpdated(long sequence, RoomSettings settings, boolean canStart) implements RoomEvent {
     }
 
-    record HostTransferred(long sequence, ActorId previousHostId, ActorId newHostId) implements RoomEvent {
+    record HostTransferred(long sequence, ActorId previousHostId, ActorId newHostId, boolean canStart) implements RoomEvent {
     }
 
-    record ParticipantLeft(long sequence, ActorId actorId) implements RoomEvent {
+    record ParticipantLeft(long sequence, ActorId actorId, boolean canStart) implements RoomEvent {
     }
 
     record RoomClosed(long sequence) implements RoomEvent {

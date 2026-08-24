@@ -217,6 +217,22 @@ class RoomTest {
     }
 
     @Test
+    void transferringHostClearsTheNewHostsReadyStateAndPublishesFreshStartEligibility() {
+        var room = RoomFixture.roomWithFourParticipants();
+        readyAllGuests(room);
+
+        var events = room.transferHost(RoomFixture.HOST, RoomFixture.GUEST_1, RoomFixture.requestId("transfer-ready"));
+
+        assertThat(room.snapshot().participants())
+            .filteredOn(participant -> participant.actorId().equals(RoomFixture.GUEST_1))
+            .allMatch(participant -> !participant.ready());
+        assertThat(room.snapshot().participantsReadyToStart()).isFalse();
+        assertThat(events).containsExactly(
+            new RoomEvent.HostTransferred(7, RoomFixture.HOST, RoomFixture.GUEST_1, false)
+        );
+    }
+
+    @Test
     void hostLeaveTransfersAuthorityToTheOldestActiveParticipant() {
         var room = RoomFixture.roomWithFourParticipants();
 
@@ -224,9 +240,42 @@ class RoomTest {
 
         assertThat(room.snapshot().hostId()).isEqualTo(RoomFixture.GUEST_1);
         assertThat(events).containsExactly(
-            new RoomEvent.ParticipantLeft(4, RoomFixture.HOST),
-            new RoomEvent.HostTransferred(5, RoomFixture.HOST, RoomFixture.GUEST_1)
+            new RoomEvent.ParticipantLeft(4, RoomFixture.HOST, false),
+            new RoomEvent.HostTransferred(5, RoomFixture.HOST, RoomFixture.GUEST_1, false)
         );
+    }
+
+    @Test
+    void hostLeaveClearsTheReplacementHostsReadyStateAndPublishesFreshStartEligibility() {
+        var room = RoomFixture.roomWithFourParticipants();
+        readyAllGuests(room);
+
+        var events = room.leave(RoomFixture.HOST, RoomFixture.requestId("host-leave-ready"));
+
+        assertThat(room.snapshot().participants())
+            .filteredOn(participant -> participant.actorId().equals(RoomFixture.GUEST_1))
+            .allMatch(participant -> !participant.ready());
+        assertThat(room.snapshot().participantsReadyToStart()).isFalse();
+        assertThat(events).containsExactly(
+            new RoomEvent.ParticipantLeft(7, RoomFixture.HOST, false),
+            new RoomEvent.HostTransferred(8, RoomFixture.HOST, RoomFixture.GUEST_1, false)
+        );
+    }
+
+    @Test
+    void activeJoinClearsExistingReadinessWhileSpectatorJoinPreservesIt() {
+        var room = RoomFixture.roomWithFourParticipants();
+        readyAllGuests(room);
+
+        room.join(new ActorId("spectator"), "관전자", true, RoomFixture.requestId("spectator-join"));
+        assertThat(room.snapshot().participantsReadyToStart()).isTrue();
+
+        room.join(new ActorId("new-player"), "새 참가자", false, RoomFixture.requestId("active-join"));
+        assertThat(room.snapshot().participantsReadyToStart()).isFalse();
+        assertThat(room.snapshot().participants())
+            .filteredOn(participant -> !participant.spectator())
+            .filteredOn(participant -> !participant.actorId().equals(RoomFixture.HOST))
+            .allMatch(participant -> !participant.ready());
     }
 
     @Test
@@ -237,7 +286,7 @@ class RoomTest {
 
         assertThat(room.snapshot().status()).isEqualTo(RoomStatus.CLOSED);
         assertThat(events).containsExactly(
-            new RoomEvent.ParticipantLeft(1, RoomFixture.HOST),
+            new RoomEvent.ParticipantLeft(1, RoomFixture.HOST, false),
             new RoomEvent.RoomClosed(2)
         );
     }
@@ -277,5 +326,11 @@ class RoomTest {
         ))
             .isInstanceOf(RoomRuleViolation.class)
             .hasMessageContaining("ROOM_PARTICIPANT_NOT_FOUND");
+    }
+
+    private static void readyAllGuests(Room room) {
+        for (var actorId : List.of(RoomFixture.GUEST_1, RoomFixture.GUEST_2, RoomFixture.GUEST_3)) {
+            room.changeReady(actorId, true, RoomFixture.requestId("ready-" + actorId.value()));
+        }
     }
 }
