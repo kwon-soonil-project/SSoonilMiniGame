@@ -102,8 +102,9 @@ public final class LiarGameModule implements GameModule {
     @Override
     public GameProjection project(GameState gameState, ActorId viewer) {
         var state = liarState(gameState);
-        var hints = state.hints().entrySet().stream()
-                .map(entry -> new LiarProjection.PublicHint(entry.getKey(), entry.getValue()))
+        var hints = state.hintOrder().stream()
+                .filter(state.hints()::containsKey)
+                .map(playerId -> new LiarProjection.PublicHint(playerId, state.hints().get(playerId)))
                 .toList();
         var publicState = new LiarProjection.PublicState(
                 state.round(), state.phase(), state.deadlineAt(), state.currentHinter(), hints, state.hints().keySet()

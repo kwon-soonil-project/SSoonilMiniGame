@@ -115,6 +115,30 @@ class LiarGameModuleTest {
     }
 
     @Test
+    void public_hint_snapshot_follows_authoritative_turn_order_after_submission_timeout_and_submission() {
+        var firstTurn = hinting(4, 23L);
+        var firstActor = firstTurn.state().currentHinter();
+        var firstSubmitted = module.handle(firstTurn.state(), firstActor, hint("첫 번째 힌트"), firstTurn.deadline().orElseThrow().at());
+        var afterFirst = (LiarGameState) firstSubmitted.state();
+        var skippedActor = afterFirst.currentHinter();
+        var afterTimeout = module.expire(afterFirst, firstSubmitted.deadline().orElseThrow(), firstSubmitted.deadline().orElseThrow().at());
+        var afterSkip = (LiarGameState) afterTimeout.state();
+        var thirdActor = afterSkip.currentHinter();
+        var afterThird = module.handle(afterSkip, thirdActor, hint("세 번째 힌트"), afterTimeout.deadline().orElseThrow().at());
+        var finalState = (LiarGameState) afterThird.state();
+
+        var publicState = (LiarProjection.PublicState) module.project(finalState, firstActor).publicState();
+
+        assertThat(skippedActor).isNotEqualTo(firstActor).isNotEqualTo(thirdActor);
+        assertThat(publicState.hints()).containsExactly(
+                new LiarProjection.PublicHint(firstActor, "첫 번째 힌트"),
+                new LiarProjection.PublicHint(thirdActor, "세 번째 힌트")
+        );
+        assertThat(((LiarProjection.PublicState) module.project(finalState, thirdActor).publicState()).hints())
+                .containsExactlyElementsOf(publicState.hints());
+    }
+
+    @Test
     void hint_submission_and_timeout_advance_in_order_then_last_hint_enters_discussing() {
         com.minigame.platform.game.domain.GameTransition transition = hinting(4, 29L).transition();
         LiarGameState state = (LiarGameState) transition.state();
