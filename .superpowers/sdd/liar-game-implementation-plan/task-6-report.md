@@ -186,3 +186,78 @@ Actual result: `BUILD SUCCESSFUL in 25s`; all 5 actionable tasks executed. JUnit
 - Runtime/deadline ownership remains intentionally process-local; reconnect recovery uses the locked REST snapshot, while process restart recovery continues to interrupt persisted orphan `RUNNING` sessions.
 - Broker delivery is non-authoritative and may lose an individual frame during an outage; gameplay remains scheduled and committed, and clients reconcile through the requester-specific snapshot rather than blocking the room lock on broker availability.
 - No frontend work, subagent delegation, push, merge, or pull request was performed.
+
+## Fix Round 2
+
+### Commit and files
+
+- Implementation commit: `48c5a4906e8e66e96daa2c2bc8f47cb81ec66239` (`fix: retry failed game deadlines`).
+- Modified production files: `SpringGameScheduler`, `GameApplicationService`, and `RoomApplicationService`.
+- Modified tests: `SpringGameSchedulerTest` and `GameApplicationServiceTest`.
+- No frontend files were changed and no push was performed.
+
+### RED evidence
+
+Repeating scheduler contract RED from `backend`:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.adapter.out.scheduling.SpringGameSchedulerTest"
+```
+
+Actual result: `BUILD FAILED`; 4 tests executed and all 4 failed with `UnsupportedOperationException` because production still used the one-shot `TaskScheduler.schedule` path instead of the requested fixed-delay watchdog.
+
+Start precommit-ordering RED:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest"
+```
+
+Actual result: `BUILD FAILED`; 24 tests executed and 2 failed. `start_scheduler_failure_creates_no_session_and_same_request_can_retry` exposed persistence before scheduling, while `start_session_failure_leaves_room_unstarted_and_same_request_can_retry` exposed that no prepared schedule existed to cancel and rollback still depended on `sessions.interrupt`.
+
+Composed real-close publication RED:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest.real_close_*"
+```
+
+Actual result: `BUILD FAILED`; 3 tests executed and 1 failed. The real room/game composition completed interruption and deadline cancellation, but a public room-event exception escaped after `Room.leave`, preventing repository cleanup.
+
+### GREEN evidence
+
+Focused scheduler verification:
+
+```powershell
+.\gradlew.bat test --tests "com.minigame.platform.game.adapter.out.scheduling.SpringGameSchedulerTest"
+```
+
+Actual result: `BUILD SUCCESSFUL in 2s`; callback exceptions were contained, the same deadline callback retried, and cancellation prevented subsequent attempts.
+
+Focused scheduler, application, room-domain, room-application, and persistence verification:
+
+```powershell
+.\gradlew.bat test --rerun-tasks --tests "com.minigame.platform.game.adapter.out.scheduling.SpringGameSchedulerTest" --tests "com.minigame.platform.game.application.GameApplicationServiceTest" --tests "com.minigame.platform.room.application.RoomApplicationServiceTest" --tests "com.minigame.platform.room.domain.RoomTest" --tests "com.minigame.platform.game.adapter.out.persistence.GamePersistenceIntegrationTest"
+```
+
+Actual result: `BUILD SUCCESSFUL in 15s`; all 4 actionable tasks executed. JUnit XML totals: **71 tests, 0 failures, 0 errors, 0 skipped** across 5 suites.
+
+Final clean backend verification:
+
+```powershell
+.\gradlew.bat clean test
+```
+
+Actual result: `BUILD SUCCESSFUL in 26s`; all 5 actionable tasks executed. JUnit XML totals: **200 tests, 0 failures, 0 errors, 0 skipped** across 31 suites. `git diff --check` reported no whitespace errors; output contained only the existing deprecated-test-API note and JVM class-data-sharing warning.
+
+### Architecture decisions
+
+- `SpringGameScheduler` now registers a cancellable fixed-delay watchdog beginning at the exact deadline, or at the injected clock instant for an overdue deadline. It retries every second, contains callback exceptions so Spring does not terminate the repeating task, and relies on the existing session/round/phase-version/deadline token check as the authoritative stale-attempt gate.
+- Successful expiry installs the replacement watchdog before cancelling the prior one. Tests fire the recorded scheduler task itself: the first prepare-schedule or session-completion attempt fails, the original task remains active, and its next retry advances the phase and cancels that original task without a direct second `service.expire` call.
+- Start precommit work is ordered as deadline registration, then `RUNNING` session persistence, then deterministic locked room/runtime attachment and schedule-handle installation. A scheduling failure creates no session; a persistence failure cancels the prepared watchdog. The impossible returned-session-id mismatch branch and all start rollback calls to `sessions.interrupt` were removed.
+- Close orchestration still performs player transition, session-specific `RUNNING` to `INTERRUPTED`, and strict deadline cancellation before consuming the leave request. Room and lobby publications after `Room.leave` are best-effort, so broker failure cannot prevent removal of a closed room.
+- Composed tests use the real `GameApplicationService`, `RoomApplicationService`, room runtime, and leave path. They prove the target session is interrupted, the current watchdog is cancelled, the room is removed, and an unrelated running session remains untouched; interrupt and cancellation failures leave the same leave request retryable.
+
+### Concerns and scope notes
+
+- A persistently failing expiry logs once per one-second retry until recovery or cancellation. This is intentionally bounded per active room/deadline and favors automatic gameplay recovery; production log aggregation should alert on sustained repetitions.
+- Runtime/deadline ownership remains process-local, and restart recovery continues to interrupt persisted orphan `RUNNING` sessions.
+- No frontend work, subagent delegation, push, merge, or pull request was performed.
