@@ -10,6 +10,7 @@ const room: RoomSnapshot = {
   visibility: 'PUBLIC', gameType: 'LIAR', status: 'WAITING', passwordProtected: false,
   participantCount: 2, maxParticipants: 10, hostId: 'host-1', sequence: 1,
   rounds: 3, actionSeconds: 30, discussionSeconds: 90, categoryPack: 'all',
+  canStart: false,
   participants: [
     { actorId: 'host-1', nickname: '방장감자', ready: false, spectator: false },
     { actorId: 'guest-1', nickname: '참가감자', ready: false, spectator: false },

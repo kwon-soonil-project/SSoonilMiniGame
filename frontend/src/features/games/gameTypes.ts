@@ -55,6 +55,7 @@ export type LiarAction =
   | 'VOTE_SUBMIT'
   | 'REVOTE_SUBMIT'
   | 'LIAR_GUESS_SUBMIT'
+  | 'RETURN_TO_WAITING'
 
 type UnknownRecord = Record<string, unknown>
 

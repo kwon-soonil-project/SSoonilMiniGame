@@ -23,23 +23,28 @@ const snapshot: RoomSnapshot = {
   actionSeconds: 30,
   discussionSeconds: 90,
   categoryPack: 'all',
+  canStart: false,
   participants: [{ actorId: hostId, nickname: '방장감자', ready: false, spectator: false }],
   chats: [],
   game: null,
 }
 
-function event(sequence: number, type: string, payload: Record<string, unknown>): RoomEvent {
+function eventFor(eventRoomId: string, sequence: number, type: string, payload: Record<string, unknown>): RoomEvent {
   return {
     version: 1,
     eventId: crypto.randomUUID(),
     requestId: crypto.randomUUID(),
-    roomId,
+    roomId: eventRoomId,
     actorId: guestId,
     type,
     sequence,
     occurredAt: '2026-08-23T00:00:00Z',
     payload,
   }
+}
+
+function event(sequence: number, type: string, payload: Record<string, unknown>): RoomEvent {
+  return eventFor(roomId, sequence, type, payload)
 }
 
 function realtimeFake(order: string[] = []) {
@@ -107,6 +112,25 @@ describe('roomStore', () => {
     expect(store.snapshot?.game?.privateState).toMatchObject(liarPrivateState)
   })
 
+  it('retains only explicit public-game fields from a malicious nested payload', async () => {
+    const store = await joinRoom(realtimeFake())
+    const allowedHint = { playerId: guestId, text: '따뜻해요' }
+    const malicious = {
+      ...publicLiarState,
+      hints: [{ ...allowedHint, role: 'LIAR', word: '비밀 제시어', aliases: ['비밀별칭'] }],
+      roundResult: { winner: 'CITIZENS', invalidated: false, liarGuessedCorrectly: false, targetActorId: guestId },
+      role: 'LIAR', word: '비밀 제시어', aliases: ['비밀별칭'], voteTarget: guestId,
+    }
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: malicious }))
+
+    expect(store.snapshot?.game?.publicState).toEqual({ ...publicLiarState, hints: [allowedHint], roundResult: {
+      winner: 'CITIZENS', invalidated: false, liarGuessedCorrectly: false,
+    } })
+    expect(JSON.stringify(store.snapshot?.game?.publicState)).not.toContain('비밀')
+    expect(JSON.stringify(store.snapshot?.game?.publicState)).not.toContain('targetActorId')
+  })
+
   it('merges a same-sequence private sidecar received before its public game state', async () => {
     const store = await joinRoom(realtimeFake())
 
@@ -161,6 +185,7 @@ describe('roomStore', () => {
       ...snapshot,
       status: 'PLAYING',
       sequence: 4,
+      canStart: true,
       game: { publicState: { ...publicLiarState, phase: 'HINTING' }, privateState: citizenPrivateState },
     }
     server.use(
@@ -176,6 +201,26 @@ describe('roomStore', () => {
     await vi.waitFor(() => expect(store.snapshot?.sequence).toBe(4))
 
     expect(store.snapshot?.game).toMatchObject(recovered.game)
+    expect(store.snapshot?.canStart).toBe(true)
+  })
+
+  it('retains canStart from REST snapshots and updates it from room events', async () => {
+    const fake = realtimeFake()
+    const joinSnapshot = { ...snapshot, canStart: true }
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(joinSnapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(joinSnapshot)),
+    )
+    const store = useRoomStore()
+    await store.join('123456', '', fake.realtime)
+
+    await store.applyPublicEvent(event(2, 'PLAYER_READY_CHANGED', { actorId: hostId, ready: true, canStart: false }))
+    await store.applyPublicEvent(event(3, 'ROOM_SETTINGS_UPDATED', {
+      gameType: 'LIAR', maxParticipants: 10, rounds: 3, actionSeconds: 30, discussionSeconds: 90, categoryPack: 'all', canStart: true,
+    }))
+
+    expect(store.snapshot?.canStart).toBe(true)
   })
 
   it('removes game state when the server returns the room to waiting', async () => {
@@ -186,6 +231,15 @@ describe('roomStore', () => {
     await store.applyPublicEvent(event(3, 'GAME_STATE_CHANGED', { game: null }))
 
     expect(store.snapshot?.game).toBeNull()
+    expect(store.snapshot?.status).toBe('WAITING')
+  })
+
+  it('marks the room as playing when a public game snapshot arrives', async () => {
+    const store = await joinRoom(realtimeFake())
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+
+    expect(store.snapshot?.status).toBe('PLAYING')
   })
 
   it('reloads the authoritative snapshot instead of applying an unknown game phase', async () => {
@@ -219,11 +273,77 @@ describe('roomStore', () => {
 
     store.startGame()
     store.sendGameAction('HINT_SUBMIT', { text: '따뜻해요' })
+    store.sendGameAction('RETURN_TO_WAITING', {})
 
     expect(fake.published.map(item => JSON.parse(item.body))).toMatchObject([
       { type: 'GAME_START', payload: {} },
       { type: 'GAME_ACTION', payload: { action: 'HINT_SUBMIT', data: { text: '따뜻해요' } } },
+      { type: 'GAME_ACTION', payload: { action: 'RETURN_TO_WAITING', data: {} } },
     ])
+  })
+
+  it('replaces duplicate synchronization events by sequence before replaying them', async () => {
+    const fake = realtimeFake()
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => {
+        void fake.handlers.get(`/topic/rooms/${roomId}`)?.(event(2, 'PLAYER_READY_CHANGED', { actorId: hostId, ready: false, canStart: false }))
+        void fake.handlers.get(`/topic/rooms/${roomId}`)?.(event(2, 'PLAYER_READY_CHANGED', { actorId: hostId, ready: true, canStart: true }))
+        return HttpResponse.json(snapshot)
+      }),
+    )
+    const store = useRoomStore()
+
+    await store.join('123456', '', fake.realtime)
+
+    expect(store.snapshot?.participants[0]?.ready).toBe(true)
+    expect(store.snapshot?.canStart).toBe(true)
+  })
+
+  it('fails recovery rather than growing an unbounded synchronization buffer', async () => {
+    const fake = realtimeFake()
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => {
+        for (let sequence = 2; sequence <= 102; sequence += 1) {
+          void fake.handlers.get(`/topic/rooms/${roomId}`)?.(event(sequence, 'CHAT_MESSAGE', {
+            messageId: `overflow-${sequence}`, actorId: guestId, nickname: '참가감자', body: '대화', sentAt: '2026-08-24T00:00:01Z',
+          }))
+        }
+        return HttpResponse.json(snapshot)
+      }),
+    )
+    const store = useRoomStore()
+
+    await expect(store.join('123456', '', fake.realtime)).rejects.toThrow('이벤트가 너무 많이 누적')
+    expect(store.connection).toBe('failed')
+  })
+
+  it('does not retain cross-room private sidecars during synchronization', async () => {
+    const fake = realtimeFake()
+    const otherRoomId = '00000000-0000-0000-0000-000000000799'
+    server.use(
+      http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => {
+        for (let sequence = 2; sequence <= 102; sequence += 1) {
+          void fake.handlers.get(`/user/queue/rooms/${roomId}`)?.(
+            eventFor(otherRoomId, sequence, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }),
+          )
+        }
+        void fake.handlers.get(`/topic/rooms/${roomId}`)?.(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
+        void fake.handlers.get(`/user/queue/rooms/${roomId}`)?.(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
+        return HttpResponse.json(snapshot)
+      }),
+    )
+    const store = useRoomStore()
+
+    await store.join('123456', '', fake.realtime)
+
+    expect(store.connection).toBe('connected')
+    expect(store.snapshot?.game).toMatchObject({ publicState: publicLiarState, privateState: liarPrivateState })
   })
 
   it('subscribes to public and private room events before loading the authoritative snapshot', async () => {

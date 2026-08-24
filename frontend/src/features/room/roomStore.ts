@@ -46,6 +46,7 @@ export interface RoomSnapshot extends RoomSettings {
   participants: RoomParticipant[]
   chats: RoomChatMessage[]
   game: GameSnapshot | null
+  canStart: boolean
 }
 
 export interface RoomChatMessage {
@@ -158,6 +159,7 @@ function sanitizeSnapshot(value: unknown): RoomSnapshot {
     participants,
     chats: Array.isArray(value.chats) ? recentUniqueChats(value.chats) : [],
     game,
+    canStart: booleanValue(value.canStart),
   }
 }
 
@@ -178,6 +180,7 @@ const commandMessages: Record<string, string> = {
 
 const STALE_JOIN = Symbol('STALE_JOIN')
 const allowableMissingMembershipCodes = new Set(['ROOM_NOT_FOUND', 'ROOM_PARTICIPANT_NOT_FOUND'])
+const MAX_BUFFERED_ROOM_EVENTS = 100
 
 export const useRoomStore = defineStore('room', () => {
   const snapshot = ref<RoomSnapshot | null>(null)
@@ -203,6 +206,8 @@ export const useRoomStore = defineStore('room', () => {
   let pendingCleanup: { roomId: string; cause: Error; blockedThroughGeneration: number } | null = null
   let bufferedPublicEvents: RoomEvent[] = []
   let bufferedPrivateEvents: RoomEvent[] = []
+  let synchronizingRoomId: string | null = null
+  let synchronizationFailure: { generation: number; cause: Error } | null = null
   let privateGameState: GamePrivateState | null = null
   let privateGameSequence = Number.NEGATIVE_INFINITY
   let publicGameSequence = Number.NEGATIVE_INFINITY
@@ -268,9 +273,7 @@ export const useRoomStore = defineStore('room', () => {
       if (generation !== joinGeneration) throw STALE_JOIN
 
       const roomId = joinedRoomId
-      synchronizing = true
-      bufferedPublicEvents = []
-      bufferedPrivateEvents = []
+      beginSynchronization(roomId, generation)
       unsubscribePublic = realtime.subscribe(`/topic/rooms/${roomId}`, payload => applyPublicEvent(payload, generation))
       unsubscribePrivate = realtime.subscribe(`/user/queue/rooms/${roomId}`, payload => applyPrivateEvent(payload, generation))
       unsubscribeState = realtime.subscribeConnectionState(state => handleConnectionState(state, generation))
@@ -280,32 +283,33 @@ export const useRoomStore = defineStore('room', () => {
       initialSnapshotRequest = controller
       const authoritative = await fetchSnapshot(roomId, controller.signal)
       if (initialSnapshotRequest === controller) initialSnapshotRequest = null
+      throwIfSynchronizationFailed(generation)
       if (generation !== joinGeneration) throw STALE_JOIN
       replaceSnapshot(authoritative)
       sequencer = new EventSequencer(authoritative.sequence, () => reloadSnapshot(roomId, generation))
-      synchronizing = false
-      for (const event of bufferedPublicEvents.splice(0)) await routeEvent(event, generation)
-      for (const event of bufferedPrivateEvents.splice(0)) await applyPrivateEvent(event, generation)
+      await replayBufferedEvents(generation)
       if (generation !== joinGeneration) return
       joined = true
       connectedOnce = true
       connection.value = 'connected'
     } catch (cause) {
+      const synchronizationCause = synchronizationFailure?.generation === generation ? synchronizationFailure.cause : cause
       if (cause === STALE_JOIN || generation !== joinGeneration) {
         disposeSubscriptions()
         resetLocalRoomState()
         if (joinedRoomId) await cleanupMembership(joinedRoomId)
         return
       }
-      if (pendingCleanup?.cause === cause) throw cause
+      if (pendingCleanup?.cause === synchronizationCause) throw synchronizationCause
       synchronizing = false
+      synchronizingRoomId = null
       connection.value = 'failed'
-      passwordRequired.value = cause instanceof ApiError && cause.code === 'ROOM_PASSWORD_INVALID'
+      passwordRequired.value = synchronizationCause instanceof ApiError && synchronizationCause.code === 'ROOM_PASSWORD_INVALID'
       error.value = passwordRequired.value
         ? '이 방에 입장하려면 비밀번호가 필요해요.'
-        : cause instanceof Error ? cause.message : '방에 입장하지 못했습니다.'
+        : synchronizationCause instanceof Error ? synchronizationCause.message : '방에 입장하지 못했습니다.'
       disposeSubscriptions()
-      throw cause
+      throw synchronizationCause
     } finally {
       if (generation === joinGeneration) {
         loading.value = false
@@ -342,9 +346,9 @@ export const useRoomStore = defineStore('room', () => {
 
   async function applyPublicEvent(payload: unknown, generation: number = joinGeneration): Promise<void> {
     if (generation !== joinGeneration) return
-    if (!isRoomEvent(payload) || (snapshot.value && payload.roomId !== snapshot.value.roomId)) return
+    if (!isRoomEvent(payload) || !eventBelongsToCurrentRoom(payload)) return
     if (synchronizing || !sequencer) {
-      bufferedPublicEvents.push(payload)
+      bufferEvent(bufferedPublicEvents, payload, generation)
       return
     }
     try {
@@ -369,9 +373,9 @@ export const useRoomStore = defineStore('room', () => {
 
   async function applyPrivateEvent(payload: unknown, generation: number = joinGeneration): Promise<void> {
     if (generation !== joinGeneration) return
-    if (!isRoomEvent(payload) || (snapshot.value && payload.roomId !== snapshot.value.roomId)) return
+    if (!isRoomEvent(payload) || !eventBelongsToCurrentRoom(payload)) return
     if (synchronizing) {
-      bufferedPrivateEvents.push(payload)
+      bufferEvent(bufferedPrivateEvents, payload, generation)
       return
     }
     if (payload.sequence > (sequencer?.current ?? 0) + 1 && snapshot.value) {
@@ -451,6 +455,7 @@ export const useRoomStore = defineStore('room', () => {
       case 'GAME_STATE_CHANGED': {
         if (payload.game === null) {
           room.game = null
+          room.status = 'WAITING'
           privateGameState = null
           privateGameSequence = event.sequence
           publicGameSequence = event.sequence
@@ -462,6 +467,7 @@ export const useRoomStore = defineStore('room', () => {
           publicState,
           privateState: privateGameSequence === event.sequence ? privateGameState : null,
         }
+        room.status = 'PLAYING'
         publicGameSequence = event.sequence
         break
       }
@@ -476,6 +482,7 @@ export const useRoomStore = defineStore('room', () => {
         break
       }
     }
+    if (typeof payload.canStart === 'boolean') room.canStart = payload.canStart
     room.participantCount = room.participants.filter(participant => !participant.spectator).length
   }
 
@@ -497,16 +504,13 @@ export const useRoomStore = defineStore('room', () => {
     const roomId = snapshot.value?.roomId
     if (!roomId || generation !== joinGeneration) return
     connection.value = 'reconnecting'
-    synchronizing = true
-    bufferedPublicEvents = []
-    bufferedPrivateEvents = []
+    beginSynchronization(roomId, generation)
     try {
       const recovered = await reloadSnapshot(roomId, generation)
+      throwIfSynchronizationFailed(generation)
       if (generation !== joinGeneration) return
       sequencer?.reset(recovered.sequence)
-      synchronizing = false
-      for (const event of bufferedPublicEvents.splice(0)) await routeEvent(event, generation)
-      for (const event of bufferedPrivateEvents.splice(0)) await applyPrivateEvent(event, generation)
+      await replayBufferedEvents(generation)
       if (generation !== joinGeneration) return
       error.value = null
       connection.value = 'connected'
@@ -518,6 +522,7 @@ export const useRoomStore = defineStore('room', () => {
   function handleRecoveryFailure(cause: unknown, generation: number): void {
     if (generation !== joinGeneration) return
     synchronizing = false
+    synchronizingRoomId = null
     bufferedPublicEvents = []
     bufferedPrivateEvents = []
     connection.value = 'failed'
@@ -612,9 +617,58 @@ export const useRoomStore = defineStore('room', () => {
     synchronizing = false
     bufferedPublicEvents = []
     bufferedPrivateEvents = []
+    synchronizingRoomId = null
+    synchronizationFailure = null
     privateGameState = null
     privateGameSequence = Number.NEGATIVE_INFINITY
     publicGameSequence = Number.NEGATIVE_INFINITY
+  }
+
+  function beginSynchronization(roomId: string, generation: number): void {
+    synchronizing = true
+    synchronizingRoomId = roomId
+    synchronizationFailure = null
+    bufferedPublicEvents = []
+    bufferedPrivateEvents = []
+  }
+
+  function eventBelongsToCurrentRoom(event: RoomEvent): boolean {
+    const expectedRoomId = synchronizingRoomId ?? snapshot.value?.roomId
+    return expectedRoomId !== null && event.roomId === expectedRoomId
+  }
+
+  function bufferEvent(target: RoomEvent[], event: RoomEvent, generation: number): void {
+    const existing = target.findIndex(buffered => buffered.sequence === event.sequence)
+    if (existing >= 0) {
+      target[existing] = event
+      return
+    }
+    if (bufferedPublicEvents.length + bufferedPrivateEvents.length >= MAX_BUFFERED_ROOM_EVENTS) {
+      failSynchronization(generation, new Error('복구 중 이벤트가 너무 많이 누적되었습니다. 다시 연결해 주세요.'))
+      return
+    }
+    target.push(event)
+  }
+
+  function failSynchronization(generation: number, cause: Error): void {
+    if (synchronizationFailure?.generation === generation) return
+    synchronizationFailure = { generation, cause }
+    initialSnapshotRequest?.abort()
+    recovery?.controller.abort()
+    handleRecoveryFailure(cause, generation)
+  }
+
+  function throwIfSynchronizationFailed(generation: number): void {
+    if (synchronizationFailure?.generation === generation) throw synchronizationFailure.cause
+  }
+
+  async function replayBufferedEvents(generation: number): Promise<void> {
+    synchronizing = false
+    synchronizingRoomId = null
+    const publicEvents = bufferedPublicEvents.splice(0).sort((left, right) => left.sequence - right.sequence)
+    const privateEvents = bufferedPrivateEvents.splice(0).sort((left, right) => left.sequence - right.sequence)
+    for (const event of publicEvents) await routeEvent(event, generation)
+    for (const event of privateEvents) await applyPrivateEvent(event, generation)
   }
 
   function clearRoom(): void {
