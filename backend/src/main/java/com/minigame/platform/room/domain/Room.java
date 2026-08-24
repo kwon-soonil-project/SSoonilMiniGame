@@ -76,13 +76,21 @@ public final class Room {
         }
         var participant = new Participant(actorId, nickname, false, spectator, nextJoinedOrder++);
         participants.put(actorId, participant);
-        return complete(request, List.of(new RoomEvent.ParticipantJoined(nextSequence(), participant)));
+        if (!spectator) {
+            resetNonHostReadiness();
+        }
+        return complete(request, List.of(new RoomEvent.ParticipantJoined(
+            nextSequence(), participant, participantsReadyToStart()
+        )));
     }
 
     public List<RoomEvent> changeReady(ActorId actorId, boolean ready, String requestId) {
         var request = processedRequest(actorId, CommandType.CHANGE_READY, requestId);
         if (processedRequests.contains(request)) {
             return List.of();
+        }
+        if (actorId.equals(hostId)) {
+            throw new RoomRuleViolation("ROOM_HOST_CANNOT_READY");
         }
         if (status != RoomStatus.WAITING) {
             throw new RoomRuleViolation("ROOM_READY_LOCKED");
@@ -92,7 +100,9 @@ public final class Room {
             throw new RoomRuleViolation("ROOM_SPECTATOR_CANNOT_READY");
         }
         participants.put(actorId, participant.withReady(ready));
-        return complete(request, List.of(new RoomEvent.ReadyChanged(nextSequence(), actorId, ready)));
+        return complete(request, List.of(new RoomEvent.ReadyChanged(
+            nextSequence(), actorId, ready, participantsReadyToStart()
+        )));
     }
 
     public List<RoomEvent> updateSettings(ActorId actorId, RoomSettings next, String requestId) {
@@ -109,8 +119,10 @@ public final class Room {
             throw new RoomRuleViolation("ROOM_MAX_PLAYERS_TOO_SMALL");
         }
         settings = next;
-        participants.replaceAll((id, participant) -> participant.withReady(false));
-        return complete(request, List.of(new RoomEvent.SettingsUpdated(nextSequence(), next)));
+        resetNonHostReadiness();
+        return complete(request, List.of(new RoomEvent.SettingsUpdated(
+            nextSequence(), next, participantsReadyToStart()
+        )));
     }
 
     public List<RoomEvent> transferHost(ActorId actorId, ActorId nextHostId, String requestId) {
@@ -185,7 +197,8 @@ public final class Room {
             status,
             hostId,
             sequence,
-            List.copyOf(participants.values())
+            List.copyOf(participants.values()),
+            participantsReadyToStart()
         );
     }
 
@@ -237,6 +250,20 @@ public final class Room {
         return participants.values().stream().filter(participant -> !participant.spectator()).count();
     }
 
+    private boolean participantsReadyToStart() {
+        return activeParticipantCount() >= settings.gameType().minimumParticipants()
+            && participants.values().stream()
+                .filter(participant -> !participant.spectator())
+                .filter(participant -> !participant.actorId().equals(hostId))
+                .allMatch(Participant::ready);
+    }
+
+    private void resetNonHostReadiness() {
+        participants.replaceAll((actorId, participant) -> actorId.equals(hostId)
+            ? participant
+            : participant.withReady(false));
+    }
+
     private long nextSequence() {
         return ++sequence;
     }
@@ -250,7 +277,8 @@ public final class Room {
         RoomStatus status,
         ActorId hostId,
         long sequence,
-        List<Participant> participants
+        List<Participant> participants,
+        boolean participantsReadyToStart
     ) {
     }
 

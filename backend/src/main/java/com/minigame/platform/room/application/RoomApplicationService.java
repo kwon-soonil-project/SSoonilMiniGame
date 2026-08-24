@@ -431,6 +431,7 @@ public class RoomApplicationService {
                 room.visibility(),
                 room.settings().gameType(),
                 room.status(),
+                room.participantsReadyToStart(),
                 passwordHashes.containsKey(room.id()),
                 activeParticipantCount(room),
                 room.settings().maxParticipants(),
@@ -572,11 +573,13 @@ public class RoomApplicationService {
                     "actorId", joined.participant().actorId().value(),
                     "nickname", joined.participant().nickname(),
                     "ready", joined.participant().ready(),
-                    "spectator", joined.participant().spectator()
+                    "spectator", joined.participant().spectator(),
+                    "canStart", joined.canStart()
             );
             case RoomEvent.ReadyChanged changed -> Map.of(
                     "actorId", changed.actorId().value(),
-                    "ready", changed.ready()
+                    "ready", changed.ready(),
+                    "canStart", changed.canStart()
             );
             case RoomEvent.SettingsUpdated updated -> Map.of(
                     "gameType", updated.settings().gameType(),
@@ -584,7 +587,8 @@ public class RoomApplicationService {
                     "rounds", updated.settings().rounds(),
                     "actionSeconds", updated.settings().actionSeconds(),
                     "discussionSeconds", updated.settings().discussionSeconds(),
-                    "categoryPack", updated.settings().categoryPack()
+                    "categoryPack", updated.settings().categoryPack(),
+                    "canStart", updated.canStart()
             );
             case RoomEvent.HostTransferred transferred -> Map.of(
                     "previousHostId", transferred.previousHostId().value(),
@@ -624,6 +628,7 @@ public class RoomApplicationService {
             Visibility visibility,
             GameType gameType,
             RoomStatus status,
+            boolean canStart,
             boolean passwordProtected,
             int participantCount,
             int maxParticipants,

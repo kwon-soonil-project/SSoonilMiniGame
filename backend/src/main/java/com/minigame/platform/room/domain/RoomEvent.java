@@ -5,13 +5,13 @@ import com.minigame.platform.auth.domain.ActorId;
 public sealed interface RoomEvent {
     long sequence();
 
-    record ParticipantJoined(long sequence, Participant participant) implements RoomEvent {
+    record ParticipantJoined(long sequence, Participant participant, boolean canStart) implements RoomEvent {
     }
 
-    record ReadyChanged(long sequence, ActorId actorId, boolean ready) implements RoomEvent {
+    record ReadyChanged(long sequence, ActorId actorId, boolean ready, boolean canStart) implements RoomEvent {
     }
 
-    record SettingsUpdated(long sequence, RoomSettings settings) implements RoomEvent {
+    record SettingsUpdated(long sequence, RoomSettings settings, boolean canStart) implements RoomEvent {
     }
 
     record HostTransferred(long sequence, ActorId previousHostId, ActorId newHostId) implements RoomEvent {

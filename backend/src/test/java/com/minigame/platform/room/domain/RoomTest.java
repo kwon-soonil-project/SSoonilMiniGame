@@ -3,14 +3,34 @@ package com.minigame.platform.room.domain;
 import com.minigame.platform.auth.domain.ActorId;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RoomTest {
     @Test
+    void hostDoesNotReadyAndOtherActivePlayersUnlockStart() {
+        var room = RoomFixture.roomWithFourParticipants();
+
+        assertThatThrownBy(() -> room.changeReady(
+            RoomFixture.HOST,
+            true,
+            RoomFixture.requestId("host-ready")
+        ))
+            .isInstanceOfSatisfying(RoomRuleViolation.class,
+                error -> assertThat(error.code()).isEqualTo("ROOM_HOST_CANNOT_READY"));
+
+        for (var actorId : List.of(RoomFixture.GUEST_1, RoomFixture.GUEST_2, RoomFixture.GUEST_3)) {
+            room.changeReady(actorId, true, RoomFixture.requestId("ready-" + actorId.value()));
+        }
+
+        assertThat(room.snapshot().participantsReadyToStart()).isTrue();
+    }
+
+    @Test
     void settingChangeClearsEveryReadyParticipant() {
         var room = RoomFixture.roomWithFourParticipants();
-        room.changeReady(RoomFixture.HOST, true, RoomFixture.requestId("ready-host"));
         room.changeReady(RoomFixture.GUEST_1, true, RoomFixture.requestId("ready-guest"));
 
         var events = room.updateSettings(
@@ -21,7 +41,7 @@ class RoomTest {
 
         assertThat(room.snapshot().participants()).allMatch(participant -> !participant.ready());
         assertThat(events).containsExactly(
-            new RoomEvent.SettingsUpdated(6, new RoomSettings(GameType.LIAR, 10, 3, 30, 90, "family"))
+            new RoomEvent.SettingsUpdated(5, new RoomSettings(GameType.LIAR, 10, 3, 30, 90, "family"), false)
         );
     }
 
@@ -120,10 +140,10 @@ class RoomTest {
         var room = RoomFixture.emptyRoom();
         var sharedRequestId = "00000000-0000-0000-0000-000000000902";
 
-        room.changeReady(RoomFixture.HOST, true, sharedRequestId);
-        var settings = room.updateSettings(RoomFixture.HOST, room.snapshot().settings(), sharedRequestId);
+        room.join(RoomFixture.GUEST_1, "참가자1", false, sharedRequestId);
+        var leave = room.leave(RoomFixture.GUEST_1, sharedRequestId);
 
-        assertThat(settings).hasSize(1);
+        assertThat(leave).hasSize(1);
         assertThat(room.snapshot().sequence()).isEqualTo(2);
     }
 

@@ -186,6 +186,30 @@ class RoomApplicationServiceTest {
         assertThat(repository.findAll()).isEmpty();
     }
 
+    @Test
+    void snapshotExposesStartEligibilityAfterAllNonHostParticipantsReady() {
+        var repository = new InMemoryActiveRoomRepository();
+        var service = new RoomApplicationService(repository, new TestPasswordEncoder());
+        var created = service.create(HOST, "시작 조건 방", Visibility.PUBLIC, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var guests = List.of(
+                ActorPrincipal.guest(new ActorId("ready-guest-1"), "참가자1"),
+                ActorPrincipal.guest(new ActorId("ready-guest-2"), "참가자2"),
+                ActorPrincipal.guest(new ActorId("ready-guest-3"), "참가자3")
+        );
+
+        for (int index = 0; index < guests.size(); index++) {
+            service.join(guests.get(index), new RoomCode(created.code()), null,
+                    "00000000-0000-0000-0000-00000000802" + index);
+        }
+        for (int index = 0; index < guests.size(); index++) {
+            service.changeReady(guests.get(index), roomId, true,
+                    "00000000-0000-0000-0000-00000000803" + index);
+        }
+
+        assertThat(service.snapshot(HOST, roomId).canStart()).isTrue();
+    }
+
     private static class DelegatingRepository implements ActiveRoomRepository {
         final InMemoryActiveRoomRepository delegate = new InMemoryActiveRoomRepository();
 

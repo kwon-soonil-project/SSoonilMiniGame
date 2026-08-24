@@ -40,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RoomCommandGatewayTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-08-23T01:00:00Z"), ZoneOffset.UTC);
     private static final ActorPrincipal HOST = ActorPrincipal.guest(new ActorId("realtime-host"), "방장감자");
+    private static final ActorPrincipal GUEST = ActorPrincipal.guest(new ActorId("realtime-guest"), "참가감자");
     private static final String READY_REQUEST = "00000000-0000-0000-0000-000000005101";
 
     private RecordingPublisher publisher;
@@ -74,9 +75,12 @@ class RoomCommandGatewayTest {
 
     @Test
     void publishesReadyEventWithRoomSequence() {
+        rooms.join(GUEST, new RoomCode(rooms.snapshot(HOST, new RoomId(roomId)).code()), null,
+                "00000000-0000-0000-0000-000000005099");
+        publisher.clear();
         gateway.handle(
                 roomId,
-                HOST,
+                GUEST,
                 new RoomCommands.RoomCommand(READY_REQUEST, "PLAYER_READY", Map.of("ready", true))
         );
 
@@ -84,21 +88,24 @@ class RoomCommandGatewayTest {
         assertThat(event.type()).isEqualTo("PLAYER_READY_CHANGED");
         assertThat(event.requestId()).isEqualTo(READY_REQUEST);
         assertThat(event.roomId()).isEqualTo(roomId);
-        assertThat(event.actorId()).isEqualTo("realtime-host");
-        assertThat(event.sequence()).isEqualTo(1L);
+        assertThat(event.actorId()).isEqualTo("realtime-guest");
+        assertThat(event.sequence()).isEqualTo(2L);
         assertThat(event.occurredAt()).isEqualTo(CLOCK.instant());
-        assertThat(event.payload()).isEqualTo(Map.of("actorId", "realtime-host", "ready", true));
+        assertThat(event.payload()).isEqualTo(Map.of("actorId", "realtime-guest", "ready", true, "canStart", false));
     }
 
     @Test
     void suppressesDuplicateReadyRequestWithinTheActorAndCommandScope() {
+        rooms.join(GUEST, new RoomCode(rooms.snapshot(HOST, new RoomId(roomId)).code()), null,
+                "00000000-0000-0000-0000-000000005099");
+        publisher.clear();
         var command = new RoomCommands.RoomCommand(READY_REQUEST, "PLAYER_READY", Map.of("ready", true));
 
-        gateway.handle(roomId, HOST, command);
-        gateway.handle(roomId, HOST, command);
+        gateway.handle(roomId, GUEST, command);
+        gateway.handle(roomId, GUEST, command);
 
         assertThat(publisher.publicEvents).hasSize(1);
-        assertThat(rooms.snapshot(HOST, new RoomId(roomId)).sequence()).isEqualTo(1L);
+        assertThat(rooms.snapshot(HOST, new RoomId(roomId)).sequence()).isEqualTo(2L);
     }
 
     @Test
@@ -166,6 +173,7 @@ class RoomCommandGatewayTest {
                 "00000000-0000-0000-0000-000000005108"
         );
         var orderedRoomId = UUID.fromString(created.roomId());
+        orderedRooms.join(GUEST, new RoomCode(created.code()), null, "00000000-0000-0000-0000-000000005107");
         orderedPublisher.clear();
         var orderedGateway = new RoomCommandGateway(
                 orderedRooms,
@@ -188,7 +196,7 @@ class RoomCommandGatewayTest {
 
             orderedGateway.handle(
                     orderedRoomId,
-                    HOST,
+                    GUEST,
                     new RoomCommands.RoomCommand(
                             "00000000-0000-0000-0000-000000005110",
                             "PLAYER_READY",
@@ -200,7 +208,7 @@ class RoomCommandGatewayTest {
         }
 
         assertThat(orderedPublisher.publicEvents).extracting(EventEnvelope::sequence)
-                .containsExactly(1L, 2L);
+                .containsExactly(2L, 3L);
         assertThat(orderedPublisher.publicEvents).extracting(EventEnvelope::type)
                 .containsExactly("CHAT_MESSAGE", "PLAYER_READY_CHANGED");
     }
