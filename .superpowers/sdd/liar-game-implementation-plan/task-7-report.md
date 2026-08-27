@@ -112,3 +112,49 @@ Actual result: `vue-tsc --noEmit` and the Vite production build both succeeded.
 - Recovery buffering is capped at 100 combined public/private entries, replaces duplicate entries within each channel by sequence, and sorts before replay. Public/private entries remain separate, so a same-sequence private sidecar is retained. Overflow fails recovery with a stable visible error rather than accumulating memory.
 - During synchronization, event room IDs are checked against the target room before buffering; stale game sidecars are also prevented from attaching by the tracked latest public-game sequence. The STOMP envelope has no game-session ID, so session isolation is necessarily sequence-based within its validated room.
 - No UI components, backend changes, push, merge, or pull request were performed. The unrelated Task 6 `progress.md` edit remains unstaged.
+
+## Fix Round 2
+
+### Commit and scope
+
+- Implementation commit: `93a4e4ef5c2fd290708ad922d326810d77403734` (`fix: clear canStart on liar game state changes`)
+- Frontend-only changes: `roomStore` now sets `canStart=false` for both non-null and null `GAME_STATE_CHANGED` envelopes, while preserving explicit `canStart` updates on other room events.
+- Added deterministic start and return regressions from an initial REST snapshot with `canStart=true`. Public/private sidecar handling and event sequencing were not changed.
+
+### RED evidence
+
+From `frontend`:
+
+```powershell
+npm.cmd test -- roomStore.spec.ts
+```
+
+Actual result before the fix: **2 tests failed, 31 tests passed**. The start and return `GAME_STATE_CHANGED` regressions both received `canStart=true` after envelopes containing only the `game` field.
+
+### GREEN evidence
+
+Focused frontend tests:
+
+```powershell
+npm.cmd test -- roomStore.spec.ts deadlineClock.spec.ts
+```
+
+Actual result: **2 files passed, 36 tests passed**.
+
+Full frontend suite:
+
+```powershell
+npm.cmd test
+```
+
+Actual result: **12 files passed, 86 tests passed**. The only output noise was the pre-existing Node experimental `localStorage` warning from the test runtime.
+
+Production type-check and build:
+
+```powershell
+npm.cmd run build
+```
+
+Actual result: `vue-tsc --noEmit` and the Vite production build both completed successfully.
+
+`git diff --check` reported no whitespace errors. No backend changes, pushes, merges, or pull requests were performed.
