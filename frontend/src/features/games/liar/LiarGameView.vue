@@ -19,9 +19,9 @@ const phaseLabel = computed(() => ({ ROLE_REVEAL: '역할 공개', HINTING: '힌
 const remaining = computed(() => remainingSeconds(props.publicState.deadlineAt, nowMs.value))
 const currentHinterName = computed(() => props.participants.find(participant => participant.actorId === props.publicState.currentHinter)?.nickname ?? '다른 참가자')
 const hintDisabled = computed(() => !props.connected || props.publicState.currentHinter !== props.actorId || props.privateState?.hintSubmitted === true)
-const voteDisabled = computed(() => !props.connected || props.privateState?.voteSubmitted === true)
 const actionDisabled = computed(() => !props.connected)
 const submitted = computed(() => props.publicState.submittedPlayerIds.includes(props.actorId))
+const voteDisabled = computed(() => !props.connected || props.privateState === null || submitted.value || props.privateState.voteSubmitted)
 const discussionDisabled = computed(() => actionDisabled.value || submitted.value)
 const guessDisabled = computed(() => actionDisabled.value || submitted.value || props.privateState?.role !== 'LIAR')
 
@@ -30,7 +30,7 @@ function send(action: LiarAction, data: Record<string, unknown> = {}): void { if
 function submitGuess(event: Event): void {
   const form = event.currentTarget as HTMLFormElement
   const word = new FormData(form).get('word')
-  if (typeof word === 'string' && word.trim()) send('LIAR_GUESS_SUBMIT', { word: word.trim() })
+  if (typeof word === 'string' && word.trim()) send('LIAR_GUESS_SUBMIT', { answer: word.trim() })
 }
 </script>
 
@@ -38,9 +38,9 @@ function submitGuess(event: Event): void {
   <div class="liar-game" data-region="liar-game">
     <header class="game-status"><div><p class="eyebrow">ROUND {{ publicState.round }}</p><h1>라이어 게임</h1></div><div><p data-region="phase-announcement" aria-live="polite">{{ phaseLabel }}</p><time data-region="timer" :datetime="publicState.deadlineAt">{{ remaining }}초 남음</time></div></header>
     <RoleRevealPanel :private-state="privateState" />
-    <HintPanel v-if="publicState.phase === 'HINTING'" :disabled="hintDisabled" :current-hinter-name="currentHinterName" @submit="send('HINT_SUBMIT', { text: $event })" />
-    <DiscussionPanel v-else-if="publicState.phase === 'DISCUSSING'" :disabled="discussionDisabled" @propose="send('DISCUSSION_END_PROPOSE')" @approve="send('DISCUSSION_END_VOTE')" />
-    <VotePanel v-else-if="publicState.phase === 'VOTING' || publicState.phase === 'REVOTING'" :participants="participants" :actor-id="actorId" :disabled="voteDisabled" :revote="publicState.phase === 'REVOTING'" @submit="send(publicState.phase === 'REVOTING' ? 'REVOTE_SUBMIT' : 'VOTE_SUBMIT', { targetId: $event })" />
+    <HintPanel v-if="publicState.phase === 'HINTING'" :disabled="hintDisabled" :current-hinter-name="currentHinterName" @submit="send('HINT_SUBMIT', { hint: $event })" />
+    <DiscussionPanel v-else-if="publicState.phase === 'DISCUSSING'" :disabled="discussionDisabled" @propose="send('DISCUSSION_END_PROPOSE')" @approve="send('DISCUSSION_END_VOTE', { agree: true })" />
+    <VotePanel v-else-if="publicState.phase === 'VOTING' || publicState.phase === 'REVOTING'" :participants="participants" :actor-id="actorId" :disabled="voteDisabled" :revote="publicState.phase === 'REVOTING'" @submit="send(publicState.phase === 'REVOTING' ? 'REVOTE_SUBMIT' : 'VOTE_SUBMIT', { targetActorId: $event })" />
     <section v-else-if="publicState.phase === 'LIAR_GUESSING'" class="panel" aria-labelledby="guess-title"><p class="eyebrow">LIAR GUESS</p><h2 id="guess-title">제시어 추측</h2><form @submit.prevent="submitGuess"><label for="liar-guess">제시어</label><input id="liar-guess" name="word" maxlength="100" :disabled="guessDisabled"><button type="submit" aria-label="제시어 추측" :disabled="guessDisabled">제시어 추측</button></form></section>
     <LiarResultPanel v-else-if="publicState.phase === 'ROUND_RESULT' || publicState.phase === 'GAME_RESULT'" :result="publicState.roundResult" :final="publicState.phase === 'GAME_RESULT'" :disabled="actionDisabled" @return-to-waiting="send('RETURN_TO_WAITING')" />
     <section v-else class="panel"><p>역할을 확인하고 다음 단계를 기다려 주세요.</p></section>

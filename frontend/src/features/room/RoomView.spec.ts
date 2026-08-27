@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '../auth/authStore'
+import type { GamePrivateState, LiarPhase } from '../games/gameTypes'
 import RoomView from './RoomView.vue'
 import { useRoomStore, type RoomSnapshot } from './roomStore'
 
@@ -17,6 +18,17 @@ const room: RoomSnapshot = {
   ],
   chats: [],
   game: null,
+}
+
+function liarGame(phase: LiarPhase, privateState: GamePrivateState | null = { role: 'LIAR', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false }) {
+  return {
+    publicState: {
+      gameType: 'LIAR' as const, round: 1, phase, deadlineAt: '2026-08-27T00:00:05Z',
+      ...(phase === 'HINTING' ? { currentHinter: 'host-1' } : {}),
+      hints: [], submittedPlayerIds: [], scores: { 'host-1': 0, 'guest-1': 0 },
+    },
+    privateState,
+  }
 }
 
 function mountRoom(
@@ -79,6 +91,46 @@ describe('RoomView', () => {
     expect(wrapper.get('[data-region="participants"]').text()).toContain('참가감자')
     expect(wrapper.get('[data-region="settings"] select').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-region="chat"] label').text()).toContain('메시지 입력')
+  })
+
+  it('forwards backend-compatible liar action envelopes from the mounted game UI', async () => {
+    const { wrapper, store } = mountRoom('host-1', false, { status: 'PLAYING', game: liarGame('HINTING') })
+    store.sendGameAction = vi.fn()
+
+    await wrapper.get('textarea#liar-hint').setValue('따뜻해요')
+    await wrapper.get('[aria-labelledby="hint-title"] form').trigger('submit')
+    expect(store.sendGameAction).toHaveBeenLastCalledWith('HINT_SUBMIT', { hint: '따뜻해요' })
+
+    store.snapshot!.game = liarGame('DISCUSSING')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('button[aria-label="토론 종료 찬성"]').trigger('click')
+    expect(store.sendGameAction).toHaveBeenLastCalledWith('DISCUSSION_END_VOTE', { agree: true })
+
+    store.snapshot!.game = liarGame('VOTING')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('input[value="guest-1"]').setValue()
+    await wrapper.get('form[data-panel="vote"]').trigger('submit')
+    expect(store.sendGameAction).toHaveBeenLastCalledWith('VOTE_SUBMIT', { targetActorId: 'guest-1' })
+
+    store.snapshot!.game = liarGame('REVOTING')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('input[value="guest-1"]').setValue()
+    await wrapper.get('form[data-panel="vote"]').trigger('submit')
+    expect(store.sendGameAction).toHaveBeenLastCalledWith('REVOTE_SUBMIT', { targetActorId: 'guest-1' })
+
+    store.snapshot!.game = liarGame('LIAR_GUESSING')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('input[name="word"]').setValue('붕어빵')
+    await wrapper.get('form').trigger('submit')
+    expect(store.sendGameAction).toHaveBeenLastCalledWith('LIAR_GUESS_SUBMIT', { answer: '붕어빵' })
+  })
+
+  it('does not render waiting-room readiness or start controls after the room closes', () => {
+    const { wrapper } = mountRoom('host-1', false, { status: 'CLOSED', canStart: true })
+
+    expect(wrapper.find('[data-action="start-game"]').exists()).toBe(false)
+    expect(wrapper.find('[data-action="ready"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('WAITING ROOM')
   })
 
   it('shows settings read-only to non-host participants', () => {

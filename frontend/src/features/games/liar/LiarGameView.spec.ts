@@ -46,7 +46,7 @@ describe('LiarGameView', () => {
     expect(wrapper.get('button[aria-label="힌트 제출"]').attributes('disabled')).toBeDefined()
   })
 
-  it('excludes the actor from vote candidates and emits the selected vote action', async () => {
+  it('excludes the actor from vote candidates and emits the backend vote envelope', async () => {
     const wrapper = mountLiar()
     await wrapper.setProps({ publicState: {
       gameType: 'LIAR', round: 1, phase: 'VOTING', deadlineAt: '2026-08-27T00:00:05Z',
@@ -57,7 +57,26 @@ describe('LiarGameView', () => {
     await wrapper.get('input[value="guest"]').setValue()
     await wrapper.get('form[data-panel="vote"]').trigger('submit')
 
-    expect(wrapper.emitted('action')).toEqual([[{ action: 'VOTE_SUBMIT', data: { targetId: 'guest' } }]])
+    expect(wrapper.emitted('action')).toEqual([[{ action: 'VOTE_SUBMIT', data: { targetActorId: 'guest' } }]])
+  })
+
+  it('disables voting until the private sidecar arrives and after either submission signal', async () => {
+    const wrapper = mountLiar()
+    const votingState = {
+      gameType: 'LIAR' as const, round: 1, phase: 'VOTING' as const, deadlineAt: '2026-08-27T00:00:05Z',
+      hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 },
+    }
+    await wrapper.setProps({ publicState: votingState, privateState: null })
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+
+    await wrapper.setProps({ privateState: { role: 'LIAR', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false } })
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeUndefined()
+
+    await wrapper.setProps({ publicState: { ...votingState, submittedPlayerIds: ['host'] } })
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+
+    await wrapper.setProps({ publicState: votingState, privateState: { role: 'LIAR', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: true } })
+    expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
   })
 
   it('exposes the phase-specific discussion, guess, and return actions by their accessible names', async () => {
