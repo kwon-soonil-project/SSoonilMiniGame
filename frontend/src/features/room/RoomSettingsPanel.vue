@@ -12,9 +12,6 @@ watch(() => props.settings, value => Object.assign(form, value), { deep: true })
 
 const games: Array<{ value: GameType; label: string }> = [
   { value: 'LIAR', label: '라이어 게임' },
-  { value: 'DRAWING', label: '그림 퀴즈' },
-  { value: 'CHOSUNG', label: '초성 퀴즈' },
-  { value: 'MAJORITY', label: '다수결 예측' },
 ]
 
 function save(): void {
@@ -36,18 +33,23 @@ function save(): void {
       </label>
       <div class="pair">
         <label>최대 인원<input v-model.number="form.maxParticipants" type="number" min="1" max="12" :disabled="!editable"></label>
-        <label>라운드<input v-model.number="form.rounds" type="number" min="1" max="20" :disabled="!editable"></label>
+        <label>라운드<input v-model.number="form.rounds" type="number" min="1" max="5" :disabled="!editable"></label>
       </div>
       <div class="pair">
-        <label>행동 시간(초)<input v-model.number="form.actionSeconds" type="number" min="1" :disabled="!editable"></label>
-        <label>토론 시간(초)<input v-model.number="form.discussionSeconds" type="number" min="1" :disabled="!editable"></label>
+        <label>행동 시간(초)<input v-model.number="form.actionSeconds" type="number" min="15" max="45" :disabled="!editable"></label>
+        <label>토론 시간(초)<input v-model.number="form.discussionSeconds" type="number" min="60" max="180" :disabled="!editable"></label>
       </div>
       <label>카테고리
         <select v-model="form.categoryPack" :disabled="!editable">
           <option value="all">전체</option>
           <option value="food">음식</option>
-          <option value="person">인물</option>
+          <option value="animal">동물</option>
+          <option value="job">직업</option>
           <option value="place">장소</option>
+          <option value="household">생활</option>
+          <option value="sports">스포츠</option>
+          <option value="transport">교통</option>
+          <option value="hobby">취미</option>
         </select>
       </label>
       <button v-if="editable" type="submit">설정 저장</button>

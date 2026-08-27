@@ -19,13 +19,17 @@ const room: RoomSnapshot = {
   game: null,
 }
 
-function mountRoom(actorId = 'host-1', attach = false) {
+function mountRoom(
+  actorId = 'host-1',
+  attach = false,
+  overrides: Partial<RoomSnapshot> = {},
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const auth = useAuthStore()
   auth.actor = { actorId, actorType: 'GUEST', nickname: actorId === 'host-1' ? '방장감자' : '참가감자', memberId: null }
   const store = useRoomStore()
-  store.snapshot = structuredClone(room)
+  store.snapshot = { ...structuredClone(room), ...overrides }
   store.connection = 'connected'
   store.join = vi.fn(async () => undefined)
   store.sendChat = vi.fn()
@@ -41,7 +45,40 @@ describe('RoomView', () => {
     expect(wrapper.get('[data-region="participants"]').text()).toContain('참가감자')
     expect(wrapper.get('[data-region="settings"]').find('select').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-region="chat"]').get('label').text()).toContain('메시지 입력')
-    expect(wrapper.get('button[data-action="ready"]').text()).toContain('준비')
+    expect(wrapper.get('[data-action="start-game"]').text()).toContain('게임 시작')
+    expect(wrapper.find('[data-action="ready"]').exists()).toBe(false)
+  })
+
+  it('shows an enabled game start button to the host only when canStart', () => {
+    const { wrapper } = mountRoom('host-1', false, { canStart: true, status: 'WAITING' })
+
+    expect(wrapper.get('[data-action="start-game"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-action="ready"]').exists()).toBe(false)
+  })
+
+  it('keeps the ready flow for a non-host participant', () => {
+    const { wrapper } = mountRoom('guest-1')
+
+    expect(wrapper.find('[data-action="start-game"]').exists()).toBe(false)
+    expect(wrapper.get('[data-action="ready"]').text()).toContain('준비')
+  })
+
+  it('renders the game shell while preserving participants, chat, and read-only settings', () => {
+    const { wrapper } = mountRoom('host-1', false, {
+      status: 'PLAYING',
+      game: {
+        publicState: {
+          gameType: 'LIAR', round: 1, phase: 'ROLE_REVEAL', deadlineAt: '2026-08-27T00:00:05Z',
+          hints: [], submittedPlayerIds: [], scores: { 'host-1': 0, 'guest-1': 0 },
+        },
+        privateState: { role: 'CITIZEN', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false },
+      },
+    })
+
+    expect(wrapper.get('[data-region="game-shell"]').text()).toContain('라이어 게임')
+    expect(wrapper.get('[data-region="participants"]').text()).toContain('참가감자')
+    expect(wrapper.get('[data-region="settings"] select').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-region="chat"] label').text()).toContain('메시지 입력')
   })
 
   it('shows settings read-only to non-host participants', () => {
@@ -93,7 +130,7 @@ describe('RoomView', () => {
     store.connection = 'reconnecting'
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.get('[data-action="ready"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-action="start-game"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[data-region="settings"] select').attributes('disabled')).toBeDefined()
     const chatInputs = wrapper.findAll('[data-region="chat"] input')
     expect(chatInputs).toHaveLength(2)
