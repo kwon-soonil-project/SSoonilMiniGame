@@ -90,11 +90,14 @@ describe('roomStore', () => {
   const citizenPrivateState = { role: 'CITIZEN', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false }
   const liarPrivateState = { role: 'LIAR', category: '음식', hintSubmitted: false, voteSubmitted: false }
 
-  async function joinRoom(fake: ReturnType<typeof realtimeFake>): Promise<ReturnType<typeof useRoomStore>> {
+  async function joinRoom(
+    fake: ReturnType<typeof realtimeFake>,
+    initialSnapshot: RoomSnapshot = snapshot,
+  ): Promise<ReturnType<typeof useRoomStore>> {
     server.use(
       http.get('/api/v1/csrf', () => HttpResponse.json({ headerName: 'X-XSRF-TOKEN', parameterName: '_csrf', token: 'csrf' })),
-      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(snapshot)),
-      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(snapshot)),
+      http.post('/api/v1/rooms/123456/join', () => HttpResponse.json(initialSnapshot)),
+      http.get(`/api/v1/rooms/${roomId}/snapshot`, () => HttpResponse.json(initialSnapshot)),
     )
     const store = useRoomStore()
     await store.join('123456', '', fake.realtime)
@@ -235,11 +238,22 @@ describe('roomStore', () => {
   })
 
   it('marks the room as playing when a public game snapshot arrives', async () => {
-    const store = await joinRoom(realtimeFake())
+    const store = await joinRoom(realtimeFake(), { ...snapshot, canStart: true })
 
     await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
 
     expect(store.snapshot?.status).toBe('PLAYING')
+    expect(store.snapshot?.canStart).toBe(false)
+  })
+
+  it('clears canStart when returning to waiting without a canStart payload', async () => {
+    const store = await joinRoom(realtimeFake(), { ...snapshot, canStart: true })
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: null }))
+
+    expect(store.snapshot?.status).toBe('WAITING')
+    expect(store.snapshot?.game).toBeNull()
+    expect(store.snapshot?.canStart).toBe(false)
   })
 
   it('reloads the authoritative snapshot instead of applying an unknown game phase', async () => {

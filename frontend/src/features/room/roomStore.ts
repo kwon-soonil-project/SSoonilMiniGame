@@ -456,6 +456,7 @@ export const useRoomStore = defineStore('room', () => {
         if (payload.game === null) {
           room.game = null
           room.status = 'WAITING'
+          room.canStart = false
           privateGameState = null
           privateGameSequence = event.sequence
           publicGameSequence = event.sequence
@@ -468,6 +469,7 @@ export const useRoomStore = defineStore('room', () => {
           privateState: privateGameSequence === event.sequence ? privateGameState : null,
         }
         room.status = 'PLAYING'
+        room.canStart = false
         publicGameSequence = event.sequence
         break
       }
@@ -482,7 +484,7 @@ export const useRoomStore = defineStore('room', () => {
         break
       }
     }
-    if (typeof payload.canStart === 'boolean') room.canStart = payload.canStart
+    if (event.type !== 'GAME_STATE_CHANGED' && typeof payload.canStart === 'boolean') room.canStart = payload.canStart
     room.participantCount = room.participants.filter(participant => !participant.spectator).length
   }
 
