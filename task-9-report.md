@@ -19,7 +19,7 @@
 | Command | Result |
 |---|---|
 | `npm.cmd test -- --list` in `e2e` | Passed static Playwright discovery: 9 tests in 3 files, including `liar-game.spec.ts`. |
-| `npm.cmd test` in `frontend` | Passed: 13 test files, 98 tests. Node emitted the existing localStorage experimental warnings. |
+| `npm.cmd test` in `frontend` | Passed: 13 test files, 99 tests. Node emitted the existing localStorage experimental warnings. |
 | `npm.cmd run build` in `frontend` | Passed: `vue-tsc --noEmit` and Vite production build. |
 | `git diff --check` before the implementation commit | Passed with no whitespace error output. |
 | `./gradlew.bat test` in `backend` | Not completed: after Gradle distribution access was allowed, Gradle failed before tests with `java.io.IOException: Unable to establish loopback connection`. |
@@ -51,3 +51,11 @@
 | `npm.cmd run build` in `frontend` | Passed: `vue-tsc --noEmit` and Vite production build. |
 | `npm.cmd test -- --list` in `e2e` | Passed static Playwright discovery: 9 tests in 3 files. |
 | Focused PostgreSQL integration / Docker build, Compose, packaged E2E | Still not executable on this host: Gradle loopback and Docker named-pipe/service access remain blocked. No packaged journey pass is claimed. |
+
+## Fix Round 2 — assertion semantics and current evidence
+
+- Fix commit: `2776018` — `test: correct all-category coverage assertion`
+- The all-category integration test still asserts 394 selected content items, exclusion behavior, uniqueness by content ID, and remaining capacity. Its category assertion now collects category codes into a set before comparing to the eight expected concrete packs, because 394 selected rows correctly contain repeated category codes.
+- The portfolio journal and baseline report now use the current frontend evidence count: 13 files, 99 tests.
+- Fresh validation: focused `LiarGameView.spec.ts` passed 8 tests; full frontend suite passed 13 files and 99 tests; production build passed; static Playwright discovery listed 9 tests in 3 files; `git diff --check` was clean.
+- PostgreSQL integration execution and packaged-container E2E remain blocked by the same Gradle loopback and Docker named-pipe/service permissions. No backend or E2E pass is claimed.
