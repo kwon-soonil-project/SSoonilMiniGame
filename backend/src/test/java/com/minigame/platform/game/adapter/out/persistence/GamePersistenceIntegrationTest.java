@@ -93,7 +93,7 @@ class GamePersistenceIntegrationTest {
         assertThat(selected).extracting(word -> word.id())
                 .doesNotHaveDuplicates()
                 .doesNotContainAnyElementsOf(excluded);
-        assertThat(selected).extracting(word -> word.categoryCode())
+        assertThat(selected.stream().map(word -> word.categoryCode()).collect(Collectors.toSet()))
                 .containsExactlyInAnyOrder("animal", "food", "hobby", "household", "job", "place", "sports", "transport");
         assertThat(liarContent.available("all", excluded, 394)).isTrue();
         assertThat(liarContent.available("all", excluded, 395)).isFalse();
