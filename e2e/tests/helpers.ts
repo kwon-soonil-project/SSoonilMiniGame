@@ -94,7 +94,17 @@ export async function awaitCrossPageParticipants(pages: Page[], nicknames: strin
   )))
 }
 
-export async function configureLiarGame(host: Page, pages: Page[], settings: LiarSettings): Promise<void> {
+export async function configureLiarGame(
+  host: Page,
+  guests: Page[],
+  pages: Page[],
+  settings: LiarSettings,
+): Promise<void> {
+  for (const guest of guests) {
+    await guest.getByRole('button', { name: '준비하기' }).click()
+  }
+  await expect(host.getByRole('button', { name: '게임 시작' })).toBeEnabled({ timeout: E2E_EXPECT_TIMEOUT })
+
   const panel = host.getByRole('region', { name: '게임 설정' })
   await panel.getByLabel('라운드').fill(String(settings.rounds))
   await panel.getByLabel('행동 시간(초)').fill(String(settings.actionSeconds))
@@ -104,7 +114,8 @@ export async function configureLiarGame(host: Page, pages: Page[], settings: Lia
 
   const summary = `${settings.rounds}라운드 · 행동 ${settings.actionSeconds}초 · 토론 ${settings.discussionSeconds}초`
   await expectAll(pages, page => page.getByText(summary, { exact: true }))
-  await Promise.all(pages.slice(1).map(page =>
+  await expect(host.getByRole('button', { name: '게임 시작' })).toBeDisabled({ timeout: E2E_EXPECT_TIMEOUT })
+  await Promise.all(guests.map(page =>
     expect(page.getByRole('button', { name: '준비하기' })).toBeEnabled({ timeout: E2E_EXPECT_TIMEOUT }),
   ))
 }
@@ -201,7 +212,12 @@ export async function submitHintsInDisplayedOrder(
 
 export async function proposeAndApproveDiscussionEnd(host: Page, approvers: Page[], pages: Page[]): Promise<void> {
   await host.getByRole('button', { name: '토론 종료 제안' }).click()
-  for (const approver of approvers.slice(0, 2)) {
+  await expect(host.getByRole('button', { name: '토론 종료 제안' })).toBeDisabled({ timeout: E2E_EXPECT_TIMEOUT })
+  const requiredApprovers = approvers.slice(0, 2)
+  await Promise.all(requiredApprovers.map(approver =>
+    expect(approver.getByRole('button', { name: '토론 종료 찬성' })).toBeEnabled({ timeout: E2E_EXPECT_TIMEOUT }),
+  ))
+  for (const approver of requiredApprovers) {
     await approver.getByRole('button', { name: '토론 종료 찬성' }).click()
   }
   await expectAll(pages, page => page.getByRole('heading', { name: '투표', exact: true }))

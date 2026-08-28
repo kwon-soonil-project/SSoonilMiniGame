@@ -34,6 +34,7 @@ test('four guests cover private reconnect, both liar guesses, first tie revote, 
     const code = await createPublicRoom(host, `라이어-${Date.now()}`)
     for (const guest of guests) await joinRoomByCode(guest, code)
     await awaitCrossPageParticipants(players.pages, nicknames)
+    await configureLiarGame(host, guests, players.pages, settings)
 
     const failedGuessRoles = await beginRound(players.pages, host, guests)
     await refreshAndExpectPrivateStateRestored(players.pages, nicknames, failedGuessRoles)
@@ -68,7 +69,6 @@ async function beginRound(
   host: Page,
   guests: Page[],
 ): Promise<DisplayedRoles> {
-  await configureLiarGame(host, pages, settings)
   await readyGuestsAndStart(host, guests, pages)
   return readDisplayedRoles(pages, nicknames)
 }

@@ -79,14 +79,24 @@ describe('LiarGameView', () => {
     expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
   })
 
-  it('exposes the phase-specific discussion, guess, and return actions by their accessible names', async () => {
+  it('reveals approval to a guest only after the public discussion proposal acknowledgement', async () => {
     const wrapper = mountLiar()
     await wrapper.setProps({ publicState: {
       gameType: 'LIAR', round: 1, phase: 'DISCUSSING', deadlineAt: '2026-08-27T00:00:05Z',
       hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 },
-    } })
+    }, actorId: 'guest' })
     expect(wrapper.get('button[aria-label="토론 종료 제안"]')).toBeDefined()
-    expect(wrapper.get('button[aria-label="토론 종료 찬성"]')).toBeDefined()
+    expect(wrapper.find('button[aria-label="토론 종료 찬성"]').exists()).toBe(false)
+
+    await wrapper.setProps({ publicState: {
+      gameType: 'LIAR', round: 1, phase: 'DISCUSSING', deadlineAt: '2026-08-27T00:00:05Z',
+      hints: [], submittedPlayerIds: ['host'], scores: { host: 0, guest: 0 },
+    } })
+    expect(wrapper.get('button[aria-label="토론 종료 찬성"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('exposes the phase-specific guess and return actions by their accessible names', async () => {
+    const wrapper = mountLiar()
 
     await wrapper.setProps({ publicState: {
       gameType: 'LIAR', round: 1, phase: 'LIAR_GUESSING', deadlineAt: '2026-08-27T00:00:05Z',

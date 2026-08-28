@@ -1,10 +1,10 @@
 <script setup lang="ts">
-defineProps<{ disabled: boolean }>()
+defineProps<{ disabled: boolean; proposalActive: boolean }>()
 const emit = defineEmits<{ propose: []; approve: [] }>()
 </script>
 
 <template>
-  <section class="panel" aria-labelledby="discussion-title"><p class="eyebrow">DISCUSSION</p><h2 id="discussion-title">토론 시간</h2><p>힌트를 바탕으로 라이어를 찾아보세요.</p><div><button type="button" aria-label="토론 종료 제안" :disabled="disabled" @click="emit('propose')">토론 종료 제안</button><button type="button" aria-label="토론 종료 찬성" :disabled="disabled" @click="emit('approve')">토론 종료 찬성</button></div></section>
+  <section class="panel" aria-labelledby="discussion-title"><p class="eyebrow">DISCUSSION</p><h2 id="discussion-title">토론 시간</h2><p>힌트를 바탕으로 라이어를 찾아보세요.</p><div><button type="button" aria-label="토론 종료 제안" :disabled="disabled" @click="emit('propose')">토론 종료 제안</button><button v-if="proposalActive" type="button" aria-label="토론 종료 찬성" :disabled="disabled" @click="emit('approve')">토론 종료 찬성</button></div></section>
 </template>
 
 <style scoped>

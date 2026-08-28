@@ -81,6 +81,25 @@ class GamePersistenceIntegrationTest {
     }
 
     @Test
+    void all_category_selection_spans_active_liar_packs_and_respects_exclusions_and_limit() {
+        var excluded = liarContent.select("all", Set.of(), 6).stream()
+                .map(word -> word.id())
+                .collect(Collectors.toSet());
+
+        var selected = liarContent.select("all", excluded, 400);
+
+        assertThat(excluded).hasSize(6);
+        assertThat(selected).hasSize(394);
+        assertThat(selected).extracting(word -> word.id())
+                .doesNotHaveDuplicates()
+                .doesNotContainAnyElementsOf(excluded);
+        assertThat(selected).extracting(word -> word.categoryCode())
+                .containsExactlyInAnyOrder("animal", "food", "hobby", "household", "job", "place", "sports", "transport");
+        assertThat(liarContent.available("all", excluded, 394)).isTrue();
+        assertThat(liarContent.available("all", excluded, 395)).isFalse();
+    }
+
+    @Test
     void content_selection_preserves_non_empty_postgres_aliases() {
         var aliasItemId = UUID.randomUUID();
         var foodPackId = jdbc.queryForObject(

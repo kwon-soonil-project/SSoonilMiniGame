@@ -16,6 +16,8 @@ import java.util.UUID;
 @Repository
 @Transactional(readOnly = true)
 public class JpaLiarContentAdapter implements LiarContentPort {
+    private static final String ALL_CATEGORY_CODE = "all";
+
     private final ObjectProvider<EntityManager> entityManagers;
 
     public JpaLiarContentAdapter(ObjectProvider<EntityManager> entityManagers) {
@@ -45,17 +47,21 @@ public class JpaLiarContentAdapter implements LiarContentPort {
         var jpql = new StringBuilder("""
                 select item from ContentItemEntity item
                 join item.contentPack pack
-                where pack.code = :categoryCode
-                  and pack.gameType = 'LIAR'
+                where pack.gameType = 'LIAR'
                   and pack.active = true
                   and item.active = true
                 """);
+        if (!ALL_CATEGORY_CODE.equals(categoryCode)) {
+            jpql.append(" and pack.code = :categoryCode");
+        }
         if (!excludedIds.isEmpty()) {
             jpql.append(" and item.id not in :excludedIds");
         }
         jpql.append(" order by item.id");
-        var query = entityManagers.getObject().createQuery(jpql.toString(), ContentItemEntity.class)
-                .setParameter("categoryCode", categoryCode);
+        var query = entityManagers.getObject().createQuery(jpql.toString(), ContentItemEntity.class);
+        if (!ALL_CATEGORY_CODE.equals(categoryCode)) {
+            query.setParameter("categoryCode", categoryCode);
+        }
         if (!excludedIds.isEmpty()) {
             query.setParameter("excludedIds", excludedIds);
         }

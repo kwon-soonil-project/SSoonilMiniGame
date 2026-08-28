@@ -20,12 +20,16 @@ const room: RoomSnapshot = {
   game: null,
 }
 
-function liarGame(phase: LiarPhase, privateState: GamePrivateState | null = { role: 'LIAR', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false }) {
+function liarGame(
+  phase: LiarPhase,
+  privateState: GamePrivateState | null = { role: 'LIAR', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false },
+  submittedPlayerIds: string[] = [],
+) {
   return {
     publicState: {
       gameType: 'LIAR' as const, round: 1, phase, deadlineAt: '2026-08-27T00:00:05Z',
       ...(phase === 'HINTING' ? { currentHinter: 'host-1' } : {}),
-      hints: [], submittedPlayerIds: [], scores: { 'host-1': 0, 'guest-1': 0 },
+      hints: [], submittedPlayerIds, scores: { 'host-1': 0, 'guest-1': 0 },
     },
     privateState,
   }
@@ -101,7 +105,7 @@ describe('RoomView', () => {
     await wrapper.get('[aria-labelledby="hint-title"] form').trigger('submit')
     expect(store.sendGameAction).toHaveBeenLastCalledWith('HINT_SUBMIT', { hint: '따뜻해요' })
 
-    store.snapshot!.game = liarGame('DISCUSSING')
+    store.snapshot!.game = liarGame('DISCUSSING', undefined, ['guest-1'])
     await wrapper.vm.$nextTick()
     await wrapper.get('button[aria-label="토론 종료 찬성"]').trigger('click')
     expect(store.sendGameAction).toHaveBeenLastCalledWith('DISCUSSION_END_VOTE', { agree: true })
