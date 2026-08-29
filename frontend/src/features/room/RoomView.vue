@@ -107,6 +107,7 @@ function handleMobileChatKeydown(event: KeyboardEvent): void {
         :private-state="room.snapshot.game.privateState"
         :participants="room.snapshot.participants"
         :actor-id="auth.actor?.actorId ?? ''"
+        :is-host="isHost"
         :connected="canCommand"
         @action="handleGameAction"
       >

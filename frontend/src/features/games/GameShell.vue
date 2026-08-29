@@ -8,6 +8,7 @@ const props = defineProps<{
   privateState: GamePrivateState | null
   participants: RoomParticipant[]
   actorId: string
+  isHost: boolean
   connected: boolean
 }>()
 const emit = defineEmits<{ action: [payload: { action: LiarAction; data: Record<string, unknown> }] }>()
@@ -21,6 +22,7 @@ const emit = defineEmits<{ action: [payload: { action: LiarAction; data: Record<
         :private-state="props.privateState"
         :participants="props.participants"
         :actor-id="props.actorId"
+        :is-host="props.isHost"
         :connected="props.connected"
         @action="emit('action', $event)"
       />

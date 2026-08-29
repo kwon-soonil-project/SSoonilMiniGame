@@ -17,16 +17,30 @@ public final class LiarProjection {
             Instant deadlineAt,
             ActorId currentHinter,
             List<PublicHint> hints,
+            List<PublicHintStatus> hintStatuses,
             Set<ActorId> submittedPlayerIds,
+            Set<ActorId> revoteCandidates,
+            ActorId liarId,
+            String answer,
             LiarGameState.RoundResult roundResult
     ) implements GameProjection.View {
         public PublicState {
             hints = List.copyOf(hints);
+            hintStatuses = List.copyOf(hintStatuses);
             submittedPlayerIds = Set.copyOf(submittedPlayerIds);
+            revoteCandidates = Set.copyOf(revoteCandidates);
         }
     }
 
     public record PublicHint(ActorId playerId, String text) {
+    }
+
+    public record PublicHintStatus(ActorId playerId, String status) {
+        public PublicHintStatus {
+            if (!"SUBMITTED".equals(status) && !"SKIPPED".equals(status)) {
+                throw new IllegalArgumentException("hint status");
+            }
+        }
     }
 
     public record PrivateState(

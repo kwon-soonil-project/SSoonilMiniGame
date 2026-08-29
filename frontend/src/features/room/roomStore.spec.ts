@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 import { server } from '../../test/setup'
+import type { GamePublicState } from '../games/gameTypes'
 import { useRoomStore, type RoomEvent, type RoomRealtimePort, type RoomSnapshot } from './roomStore'
 
 const roomId = '00000000-0000-0000-0000-000000000701'
@@ -82,7 +83,7 @@ function realtimeFake(order: string[] = []) {
 }
 
 describe('roomStore', () => {
-  const publicLiarState = {
+  const publicLiarState: GamePublicState = {
     gameType: 'LIAR', round: 1, phase: 'ROLE_REVEAL', deadlineAt: '2026-08-24T00:00:05Z',
     hints: [], submittedPlayerIds: [], scores: { [hostId]: 0 },
   }
@@ -122,16 +123,71 @@ describe('roomStore', () => {
       ...publicLiarState,
       hints: [{ ...allowedHint, role: 'LIAR', word: '비밀 제시어', aliases: ['비밀별칭'] }],
       roundResult: { winner: 'CITIZENS', invalidated: false, liarGuessedCorrectly: false, targetActorId: guestId },
+      finalScores: [{ actorId: guestId, nickname: '비밀순위', score: 99, rank: 1, roundsPlayed: 1 }],
       role: 'LIAR', word: '비밀 제시어', aliases: ['비밀별칭'], voteTarget: guestId,
     }
 
     await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: malicious }))
 
-    expect(store.snapshot?.game?.publicState).toEqual({ ...publicLiarState, hints: [allowedHint], roundResult: {
-      winner: 'CITIZENS', invalidated: false, liarGuessedCorrectly: false,
-    } })
+    expect(store.snapshot?.game?.publicState).toEqual({
+      ...publicLiarState,
+      hints: [allowedHint],
+      hintStatuses: [{ playerId: guestId, status: 'SUBMITTED' }],
+    })
     expect(JSON.stringify(store.snapshot?.game?.publicState)).not.toContain('비밀')
     expect(JSON.stringify(store.snapshot?.game?.publicState)).not.toContain('targetActorId')
+  })
+
+  it('retains authoritative hint status and phase-gates public revote candidates and result secrets', async () => {
+    const store = await joinRoom(realtimeFake())
+    const revoting = {
+      ...publicLiarState,
+      phase: 'REVOTING',
+      hints: [{ playerId: hostId, text: '첫 힌트' }],
+      hintStatuses: [
+        { playerId: hostId, status: 'SUBMITTED' },
+        { playerId: guestId, status: 'SKIPPED' },
+      ],
+      revoteCandidates: [hostId, guestId],
+    }
+
+    await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: revoting }))
+
+    expect(store.snapshot?.game?.publicState).toMatchObject({
+      hintStatuses: revoting.hintStatuses,
+      revoteCandidates: [hostId, guestId],
+    })
+
+    await store.applyPublicEvent(event(3, 'GAME_STATE_CHANGED', { game: {
+      ...publicLiarState,
+      phase: 'ROUND_RESULT',
+      hintStatuses: revoting.hintStatuses,
+      revoteCandidates: [hostId],
+      liarId: guestId,
+      answer: '붕어빵',
+      roundResult: { winner: 'CITIZENS', invalidated: false, accusedId: guestId, liarGuessedCorrectly: false },
+    } }))
+
+    expect(store.snapshot?.game?.publicState).toMatchObject({ liarId: guestId, answer: '붕어빵' })
+    expect(store.snapshot?.game?.publicState).not.toHaveProperty('revoteCandidates')
+
+    await store.applyPublicEvent(event(4, 'GAME_STATE_CHANGED', { game: {
+      ...publicLiarState,
+      phase: 'GAME_RESULT',
+      liarId: guestId,
+      answer: '붕어빵',
+      roundResult: { winner: 'CITIZENS', invalidated: false, accusedId: guestId, liarGuessedCorrectly: false },
+      finalScores: [
+        { actorId: guestId, nickname: '참가감자', score: 2, rank: 2, roundsPlayed: 2, role: 'LIAR' },
+        { actorId: 'departed', nickname: '떠난감자', score: 4, rank: 1, roundsPlayed: 1 },
+      ],
+    } }))
+
+    expect(store.snapshot?.game?.publicState.finalScores).toEqual([
+      { actorId: 'departed', nickname: '떠난감자', score: 4, rank: 1, roundsPlayed: 1 },
+      { actorId: guestId, nickname: '참가감자', score: 2, rank: 2, roundsPlayed: 2 },
+    ])
+    expect(JSON.stringify(store.snapshot?.game?.publicState.finalScores)).not.toContain('role')
   })
 
   it('merges a same-sequence private sidecar received before its public game state', async () => {
@@ -224,6 +280,28 @@ describe('roomStore', () => {
     }))
 
     expect(store.snapshot?.canStart).toBe(true)
+  })
+
+  it('applies spectator promotion events to the participant roster and active count', async () => {
+    const promotedSnapshot: RoomSnapshot = {
+      ...snapshot,
+      status: 'PLAYING',
+      participantCount: 1,
+      participants: [
+        snapshot.participants[0]!,
+        { actorId: guestId, nickname: '승격참가자', ready: false, spectator: true },
+      ],
+      game: { publicState: publicLiarState, privateState: null },
+    }
+    const store = await joinRoom(realtimeFake(), promotedSnapshot)
+
+    await store.applyPublicEvent(event(2, 'PLAYER_SPECTATOR_CHANGED', {
+      actorId: guestId,
+      spectator: false,
+    }))
+
+    expect(store.snapshot?.participants.find(participant => participant.actorId === guestId)?.spectator).toBe(false)
+    expect(store.snapshot?.participantCount).toBe(2)
   })
 
   it('removes game state when the server returns the room to waiting', async () => {

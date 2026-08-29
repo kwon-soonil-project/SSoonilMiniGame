@@ -30,6 +30,7 @@ function liarGame(
       gameType: 'LIAR' as const, round: 1, phase, deadlineAt: '2026-08-27T00:00:05Z',
       ...(phase === 'HINTING' ? { currentHinter: 'host-1' } : {}),
       hints: [], submittedPlayerIds, scores: { 'host-1': 0, 'guest-1': 0 },
+      ...(phase === 'REVOTING' ? { revoteCandidates: ['host-1', 'guest-1'] } : {}),
     },
     privateState,
   }
@@ -77,6 +78,25 @@ describe('RoomView', () => {
 
     expect(wrapper.find('[data-action="start-game"]').exists()).toBe(false)
     expect(wrapper.get('[data-action="ready"]').text()).toContain('준비')
+  })
+
+  it('enables the ready control when a final waiting-room spectator is activated', async () => {
+    const waitingParticipants = room.participants.map(participant => participant.actorId === 'guest-1'
+      ? { ...participant, spectator: true }
+      : participant)
+    const { wrapper, store } = mountRoom('guest-1', false, {
+      participantCount: 1,
+      participants: waitingParticipants,
+    })
+    expect(wrapper.get('[data-action="ready"]').attributes('disabled')).toBeDefined()
+
+    const promoted = store.snapshot?.participants.find(participant => participant.actorId === 'guest-1')
+    if (!promoted) throw new Error('guest fixture missing')
+    promoted.spectator = false
+    store.snapshot!.participantCount = 2
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-action="ready"]').attributes('disabled')).toBeUndefined()
   })
 
   it('renders the game shell while preserving participants, chat, and read-only settings', () => {

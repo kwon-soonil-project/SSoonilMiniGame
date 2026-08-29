@@ -13,11 +13,24 @@ export interface LiarPublicHint {
   text: string
 }
 
+export interface LiarPublicHintStatus {
+  playerId: string
+  status: 'SUBMITTED' | 'SKIPPED'
+}
+
 export interface LiarRoundResult {
   winner: string
   invalidated: boolean
   accusedId?: string
   liarGuessedCorrectly: boolean
+}
+
+export interface LiarFinalScoreEntry {
+  actorId: string
+  nickname: string
+  score: number
+  rank: number
+  roundsPlayed: number
 }
 
 export interface LiarPublicState {
@@ -27,9 +40,14 @@ export interface LiarPublicState {
   deadlineAt: string
   currentHinter?: string
   hints: LiarPublicHint[]
+  hintStatuses?: LiarPublicHintStatus[]
   submittedPlayerIds: string[]
+  revoteCandidates?: string[]
   scores: Record<string, number>
+  liarId?: string
+  answer?: string
   roundResult?: LiarRoundResult
+  finalScores?: LiarFinalScoreEntry[]
 }
 
 export interface LiarPrivateState {
@@ -90,6 +108,18 @@ function hints(value: unknown): LiarPublicHint[] | null {
   return sanitized
 }
 
+function hintStatuses(value: unknown, publicHints: LiarPublicHint[]): LiarPublicHintStatus[] | null {
+  if (value === undefined) return publicHints.map(hint => ({ playerId: hint.playerId, status: 'SUBMITTED' }))
+  if (!Array.isArray(value)) return null
+  const sanitized: LiarPublicHintStatus[] = []
+  for (const status of value) {
+    if (!isRecord(status) || typeof status.playerId !== 'string'
+      || (status.status !== 'SUBMITTED' && status.status !== 'SKIPPED')) return null
+    sanitized.push({ playerId: status.playerId, status: status.status })
+  }
+  return sanitized
+}
+
 function roundResult(value: unknown): LiarRoundResult | null | undefined {
   if (value === undefined) return undefined
   if (!isRecord(value) || typeof value.winner !== 'string' || typeof value.invalidated !== 'boolean'
@@ -103,6 +133,28 @@ function roundResult(value: unknown): LiarRoundResult | null | undefined {
   }
 }
 
+function finalScores(value: unknown): LiarFinalScoreEntry[] | null {
+  if (!Array.isArray(value)) return null
+  const actorIds = new Set<string>()
+  const sanitized: LiarFinalScoreEntry[] = []
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry.actorId !== 'string' || actorIds.has(entry.actorId)
+      || typeof entry.nickname !== 'string'
+      || typeof entry.score !== 'number' || !Number.isFinite(entry.score)
+      || typeof entry.rank !== 'number' || !Number.isSafeInteger(entry.rank) || entry.rank < 1
+      || typeof entry.roundsPlayed !== 'number' || !Number.isSafeInteger(entry.roundsPlayed) || entry.roundsPlayed < 0) return null
+    actorIds.add(entry.actorId)
+    sanitized.push({
+      actorId: entry.actorId,
+      nickname: entry.nickname,
+      score: entry.score,
+      rank: entry.rank,
+      roundsPlayed: entry.roundsPlayed,
+    })
+  }
+  return sanitized.sort((left, right) => right.score - left.score || left.actorId.localeCompare(right.actorId))
+}
+
 export function sanitizeGamePublicState(value: unknown): GamePublicState | null {
   if (!isRecord(value) || value.gameType !== 'LIAR' || !liarPhases.has(value.phase as LiarPhase)
     || typeof value.round !== 'number' || !Number.isSafeInteger(value.round) || value.round < 1
@@ -110,19 +162,32 @@ export function sanitizeGamePublicState(value: unknown): GamePublicState | null 
   const publicHints = hints(value.hints)
   const submittedPlayerIds = stringArray(value.submittedPlayerIds)
   const publicScores = scores(value.scores)
-  const result = roundResult(value.roundResult)
-  if (!publicHints || !submittedPlayerIds || !publicScores || result === null) return null
+  if (!publicHints || !submittedPlayerIds || !publicScores) return null
+  const publicHintStatuses = hintStatuses(value.hintStatuses, publicHints)
+  if (!publicHintStatuses) return null
+  const phase = value.phase as LiarPhase
+  const resultPhase = phase === 'ROUND_RESULT' || phase === 'GAME_RESULT'
+  const result = resultPhase ? roundResult(value.roundResult) : undefined
+  if (resultPhase && (result === null || result === undefined
+    || typeof value.liarId !== 'string' || typeof value.answer !== 'string')) return null
+  const revoteCandidates = phase === 'REVOTING' ? stringArray(value.revoteCandidates) : undefined
+  if (phase === 'REVOTING' && revoteCandidates === null) return null
+  const rankedScores = phase === 'GAME_RESULT' ? finalScores(value.finalScores) : undefined
+  if (phase === 'GAME_RESULT' && rankedScores === null) return null
   if (value.currentHinter !== undefined && typeof value.currentHinter !== 'string') return null
   return {
     gameType: 'LIAR',
     round: value.round,
-    phase: value.phase as LiarPhase,
+    phase,
     deadlineAt: value.deadlineAt,
     ...(typeof value.currentHinter === 'string' ? { currentHinter: value.currentHinter } : {}),
     hints: publicHints,
+    hintStatuses: publicHintStatuses,
     submittedPlayerIds,
+    ...(phase === 'REVOTING' ? { revoteCandidates: revoteCandidates ?? [] } : {}),
     scores: publicScores,
-    ...(result === undefined ? {} : { roundResult: result }),
+    ...(resultPhase ? { liarId: value.liarId as string, answer: value.answer as string, roundResult: result as LiarRoundResult } : {}),
+    ...(phase === 'GAME_RESULT' ? { finalScores: rankedScores ?? [] } : {}),
   }
 }
 

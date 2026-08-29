@@ -78,7 +78,7 @@ public final class LiarGameModule implements GameModule {
             case HINTING -> advanceHint(state, state.hints(), now, GameSignal.publicSignal("HINT_SKIPPED", Map.of("playerId", state.currentHinter())));
             case DISCUSSING -> enterVoting(state, now);
             case VOTING, REVOTING -> resolveVote(state, now);
-            case LIAR_GUESSING -> finishRound(state, LiarGameState.RoundResult.citizensWon(state.liarId(), false), now);
+            case LIAR_GUESSING -> finishRound(state, LiarGameState.RoundResult.citizensWon(state.liarId()), now);
             case ROUND_RESULT -> unchanged(state);
             case GAME_RESULT -> new GameTransition(state, List.of(), Map.of(), Optional.empty(), true);
         };
@@ -90,12 +90,24 @@ public final class LiarGameModule implements GameModule {
         if (state.phase() == LiarPhase.ROUND_RESULT || state.phase() == LiarPhase.GAME_RESULT) return unchanged(state);
         if (!activeIds(state).contains(actorId)) return unchanged(state);
         var remaining = state.players().stream().filter(player -> !player.actorId().equals(actorId)).toList();
+        var departedHintIndex = state.hintOrder().indexOf(actorId);
+        var currentHinterDeparted = state.phase() == LiarPhase.HINTING && actorId.equals(state.currentHinter());
+        var removeFutureHintTurn = state.phase() == LiarPhase.ROLE_REVEAL
+                || (state.phase() == LiarPhase.HINTING
+                && departedHintIndex > state.hintIndex()
+                && !state.hints().containsKey(actorId));
+        var retainedHintOrder = removeFutureHintTurn
+                ? state.hintOrder().stream().filter(id -> !id.equals(actorId)).toList()
+                : state.hintOrder();
         var reduced = copy(state, remaining, state.liarBag().stream().filter(id -> !id.equals(actorId)).toList(), state.randomState(),
-                state.hintOrder().stream().filter(id -> !id.equals(actorId)).toList(), adjustedHintIndex(state, actorId), withoutKey(state.hints(), actorId),
+                retainedHintOrder, state.hintIndex(), state.hints(),
                 withoutActor(state.discussionEndVotes(), actorId), withoutActor(state.discussionEndRespondents(), actorId), withoutVote(state.votes(), actorId),
                 withoutActor(state.revoteCandidates(), actorId), state.liarGuessSubmitted(), state.roundResult());
         if (actorId.equals(state.liarId()) || remaining.size() < GameType.LIAR.minimumParticipants()) return finishRound(reduced, LiarGameState.RoundResult.invalidatedRound(), now);
-        if (state.phase() == LiarPhase.HINTING && actorId.equals(state.currentHinter())) return skipDepartedHinter(reduced, actorId, now);
+        if (currentHinterDeparted) {
+            return advanceHint(reduced, reduced.hints(), now,
+                    GameSignal.publicSignal("HINT_SKIPPED", Map.of("playerId", actorId)));
+        }
         if ((state.phase() == LiarPhase.VOTING || state.phase() == LiarPhase.REVOTING) && allEligibleVoted(reduced)) return resolveVote(reduced, now);
         return transition(reduced, List.of(GameSignal.publicSignal("PLAYER_LEFT_GAME", Map.of("playerId", actorId))));
     }
@@ -105,7 +117,9 @@ public final class LiarGameModule implements GameModule {
         var state = liarState(gameState);
         validateUniqueRoster(players);
         if (state.phase() == LiarPhase.ROUND_RESULT) {
-            if (state.round() == state.totalRounds() || players.size() < GameType.LIAR.minimumParticipants()) return enterGameResult(state, now);
+            if (state.round() == state.totalRounds() || players.size() < GameType.LIAR.minimumParticipants()) {
+                return enterGameResult(state, players, now);
+            }
             return nextRound(state, players, now);
         }
         var departing = state.players().stream().map(GamePlayer::actorId).filter(id -> players.stream().noneMatch(player -> player.actorId().equals(id))).toList();
@@ -118,6 +132,11 @@ public final class LiarGameModule implements GameModule {
     public GameProjection project(GameState gameState, ActorId viewer) {
         var state = liarState(gameState);
         var hints = state.hintOrder().stream().filter(state.hints()::containsKey).map(id -> new LiarProjection.PublicHint(id, state.hints().get(id))).toList();
+        var processedHintCount = Math.min(state.hintIndex(), state.hintOrder().size());
+        var hintStatuses = state.hintOrder().subList(0, processedHintCount).stream()
+                .map(id -> new LiarProjection.PublicHintStatus(
+                        id, state.hints().containsKey(id) ? "SUBMITTED" : "SKIPPED"
+                )).toList();
         var submitted = switch (state.phase()) {
             case HINTING -> state.hints().keySet();
             case DISCUSSING -> state.discussionEndRespondents();
@@ -125,7 +144,14 @@ public final class LiarGameModule implements GameModule {
             case LIAR_GUESSING -> state.liarGuessSubmitted() ? Set.of(state.liarId()) : Set.<ActorId>of();
             default -> Set.<ActorId>of();
         };
-        var publicState = new LiarProjection.PublicState(state.round(), state.phase(), state.deadlineAt(), state.currentHinter(), hints, submitted, state.roundResult());
+        var resultPhase = state.phase() == LiarPhase.ROUND_RESULT || state.phase() == LiarPhase.GAME_RESULT;
+        var publicState = new LiarProjection.PublicState(
+                state.round(), state.phase(), state.deadlineAt(), state.currentHinter(), hints, hintStatuses, submitted,
+                state.phase() == LiarPhase.REVOTING ? state.revoteCandidates() : Set.of(),
+                resultPhase ? state.liarId() : null,
+                resultPhase ? state.word().answer() : null,
+                resultPhase ? state.roundResult() : null
+        );
         if (!activeIds(state).contains(viewer)) return new GameProjection(publicState, Optional.empty());
         var liar = viewer.equals(state.liarId());
         return new GameProjection(publicState, Optional.of(new LiarProjection.PrivateState(liar ? "LIAR" : "CITIZEN", state.word().categoryCode(), liar ? null : state.word().answer(), state.hints().containsKey(viewer), state.votes().containsKey(viewer))));
@@ -203,7 +229,9 @@ public final class LiarGameModule implements GameModule {
         var normalized = TextNormalizer.normalize(answer);
         var correct = normalized.equals(TextNormalizer.normalize(state.word().answer())) || state.word().aliases().stream().map(TextNormalizer::normalize).anyMatch(normalized::equals);
         var guessed = copy(state, state.players(), state.liarBag(), state.randomState(), state.hintOrder(), state.hintIndex(), state.hints(), state.discussionEndVotes(), state.discussionEndRespondents(), state.votes(), state.revoteCandidates(), true, null);
-        return finishRound(guessed, LiarGameState.RoundResult.citizensWon(state.liarId(), correct), now);
+        return finishRound(guessed, correct
+                ? LiarGameState.RoundResult.liarComeback(state.liarId())
+                : LiarGameState.RoundResult.citizensWon(state.liarId()), now);
     }
 
     private GameTransition advanceHint(LiarGameState state, Map<ActorId, String> hints, Instant now, GameSignal signal) {
@@ -216,20 +244,18 @@ public final class LiarGameModule implements GameModule {
         return transition(next, List.of(signal, phaseSignal(next)));
     }
 
-    private GameTransition skipDepartedHinter(LiarGameState state, ActorId departed, Instant now) {
-        var phase = state.hintIndex() >= state.hintOrder().size() ? LiarPhase.DISCUSSING : LiarPhase.HINTING;
-        var seconds = phase == LiarPhase.DISCUSSING ? state.discussionSeconds() : state.actionSeconds();
-        var next = withPhase(state, phase, now.plusSeconds(seconds));
-        return transition(next, List.of(GameSignal.publicSignal("HINT_SKIPPED", Map.of("playerId", departed)), phaseSignal(next)));
-    }
-
     private GameTransition finishRound(LiarGameState state, LiarGameState.RoundResult result, Instant now) {
         var finished = phaseCopy(state, LiarPhase.ROUND_RESULT, now.plusSeconds(ROUND_RESULT_SECONDS), Map.of(), Set.of(), false, result);
         return transition(finished, List.of(GameSignal.publicSignal("ROUND_RESULT", resultPayload(finished)), phaseSignal(finished)), LiarScoring.score(finished, result));
     }
 
-    private GameTransition enterGameResult(LiarGameState state, Instant now) {
-        var result = phaseCopy(state, LiarPhase.GAME_RESULT, now.plusSeconds(GAME_RESULT_SECONDS), Map.of(), Set.of(), false, state.roundResult());
+    private GameTransition enterGameResult(LiarGameState state, List<GamePlayer> players, Instant now) {
+        var roster = copy(
+                state, players, state.liarBag(), state.randomState(), state.hintOrder(), state.hintIndex(), state.hints(),
+                state.discussionEndVotes(), state.discussionEndRespondents(), state.votes(), state.revoteCandidates(),
+                state.liarGuessSubmitted(), state.roundResult()
+        );
+        var result = phaseCopy(roster, LiarPhase.GAME_RESULT, now.plusSeconds(GAME_RESULT_SECONDS), Map.of(), Set.of(), false, state.roundResult());
         return transition(result, List.of(phaseSignal(result)));
     }
 
@@ -264,8 +290,6 @@ public final class LiarGameModule implements GameModule {
     private static boolean majority(LiarGameState state) { return state.discussionEndVotes().size() >= state.players().size() / 2 + 1; }
     private static boolean allEligibleVoted(LiarGameState state) { return activeIds(state).stream().allMatch(state.votes()::containsKey); }
     private static Set<ActorId> activeIds(LiarGameState state) { return state.players().stream().map(GamePlayer::actorId).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)); }
-    private static int adjustedHintIndex(LiarGameState state, ActorId actorId) { var index = state.hintOrder().indexOf(actorId); return index >= 0 && index < state.hintIndex() ? state.hintIndex() - 1 : state.hintIndex(); }
-    private static Map<ActorId, String> withoutKey(Map<ActorId, String> values, ActorId actorId) { var copy = new HashMap<>(values); copy.remove(actorId); return copy; }
     private static Map<ActorId, ActorId> withoutVote(Map<ActorId, ActorId> votes, ActorId actorId) { var copy = new HashMap<>(votes); copy.entrySet().removeIf(entry -> entry.getKey().equals(actorId) || entry.getValue().equals(actorId)); return copy; }
     private static Set<ActorId> withoutActor(Set<ActorId> values, ActorId actorId) { return values.stream().filter(id -> !id.equals(actorId)).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)); }
     private static void requireActive(LiarGameState state, ActorId actorId) { if (!activeIds(state).contains(actorId)) throw violation("GAME_ACTION_NOT_ALLOWED"); }

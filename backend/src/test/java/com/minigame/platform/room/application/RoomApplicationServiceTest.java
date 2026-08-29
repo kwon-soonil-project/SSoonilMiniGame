@@ -219,6 +219,54 @@ class RoomApplicationServiceTest {
     }
 
     @Test
+    void realtime_eligibility_events_use_content_aware_can_start_like_the_rest_snapshot() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var games = mock(GameApplicationService.class);
+        when(games.canStart(any())).thenReturn(false);
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                publisher,
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+        var created = service.create(HOST, "콘텐츠 없는 방", Visibility.PUBLIC, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var guests = List.of(
+                ActorPrincipal.guest(new ActorId("content-guest-1"), "참가자1"),
+                ActorPrincipal.guest(new ActorId("content-guest-2"), "참가자2"),
+                ActorPrincipal.guest(new ActorId("content-guest-3"), "참가자3")
+        );
+        for (int index = 0; index < guests.size(); index++) {
+            service.join(guests.get(index), new RoomCode(created.code()), null,
+                    "00000000-0000-0000-0000-00000000806" + index);
+        }
+        service.updateSettings(HOST, roomId, new com.minigame.platform.room.domain.RoomSettings(
+                GameType.LIAR, 10, 3, 30, 90, "content-empty"
+        ), "00000000-0000-0000-0000-000000008080");
+        for (int index = 0; index < guests.size(); index++) {
+            service.changeReady(guests.get(index), roomId, true,
+                    "00000000-0000-0000-0000-00000000807" + index);
+        }
+        service.leave(HOST, roomId, "00000000-0000-0000-0000-000000008081");
+
+        assertThat(service.snapshot(guests.getFirst(), roomId).canStart()).isFalse();
+        assertThat(publisher.publicEvents).extracting(EventEnvelope::type)
+                .contains("PLAYER_JOINED", "PLAYER_READY_CHANGED", "ROOM_SETTINGS_UPDATED", "HOST_TRANSFERRED", "PLAYER_LEFT");
+        assertThat(publisher.publicEvents)
+                .filteredOn(event -> List.of(
+                        "PLAYER_JOINED", "PLAYER_READY_CHANGED", "ROOM_SETTINGS_UPDATED", "HOST_TRANSFERRED", "PLAYER_LEFT"
+                ).contains(event.type()))
+                .allSatisfy(event -> assertThat(((Map<?, ?>) event.payload()).get("canStart")).isEqualTo(false));
+    }
+
+    @Test
     void leavePublishesTheFreshStartEligibilityInItsPublicPayload() {
         var repository = new InMemoryActiveRoomRepository();
         var publisher = new RecordingPublisher();

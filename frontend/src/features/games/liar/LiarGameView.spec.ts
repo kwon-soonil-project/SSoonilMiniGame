@@ -17,6 +17,7 @@ function mountLiar() {
       privateState: { role: 'LIAR', category: '음식', word: '붕어빵', hintSubmitted: false, voteSubmitted: false },
       participants,
       actorId: 'host',
+      isHost: true,
       connected: true,
     },
   })
@@ -60,6 +61,40 @@ describe('LiarGameView', () => {
     expect(wrapper.emitted('action')).toEqual([[{ action: 'VOTE_SUBMIT', data: { targetActorId: 'guest' } }]])
   })
 
+  it('makes a mid-round promoted participant eligible for voting', async () => {
+    const wrapper = mountLiar()
+    const waiting = { actorId: 'waiting', nickname: '승격감자', ready: false, spectator: true }
+    await wrapper.setProps({
+      publicState: {
+        gameType: 'LIAR', round: 1, phase: 'VOTING', deadlineAt: '2026-08-27T00:00:05Z',
+        hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0, waiting: 0 },
+      },
+      participants: [...participants, waiting],
+    })
+    expect(wrapper.find('input[value="waiting"]').exists()).toBe(false)
+
+    await wrapper.setProps({ participants: [...participants, { ...waiting, spectator: false }] })
+
+    expect(wrapper.find('input[value="waiting"]').exists()).toBe(true)
+  })
+
+  it('offers exactly the public tied candidates during a revote while excluding self', async () => {
+    const wrapper = mountLiar()
+    const third = { actorId: 'third', nickname: '제외감자', ready: true, spectator: false }
+    await wrapper.setProps({
+      publicState: {
+        gameType: 'LIAR', round: 1, phase: 'REVOTING', deadlineAt: '2026-08-27T00:00:05Z',
+        hints: [], hintStatuses: [], submittedPlayerIds: [], scores: { host: 0, guest: 0, third: 0 },
+        revoteCandidates: ['host', 'guest'],
+      },
+      participants: [...participants, third],
+    })
+
+    expect(wrapper.find('input[value="host"]').exists()).toBe(false)
+    expect(wrapper.find('input[value="guest"]').exists()).toBe(true)
+    expect(wrapper.find('input[value="third"]').exists()).toBe(false)
+  })
+
   it('disables voting until the private sidecar arrives and after either submission signal', async () => {
     const wrapper = mountLiar()
     const votingState = {
@@ -84,8 +119,8 @@ describe('LiarGameView', () => {
     await wrapper.setProps({ publicState: {
       gameType: 'LIAR', round: 1, phase: 'DISCUSSING', deadlineAt: '2026-08-27T00:00:05Z',
       hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 },
-    }, actorId: 'guest' })
-    expect(wrapper.get('button[aria-label="토론 종료 제안"]')).toBeDefined()
+    }, actorId: 'guest', isHost: false })
+    expect(wrapper.find('button[aria-label="토론 종료 제안"]').exists()).toBe(false)
     expect(wrapper.find('button[aria-label="토론 종료 찬성"]').exists()).toBe(false)
 
     await wrapper.setProps({ publicState: {
@@ -93,6 +128,22 @@ describe('LiarGameView', () => {
       hints: [], submittedPlayerIds: ['host'], scores: { host: 0, guest: 0 },
     } })
     expect(wrapper.get('button[aria-label="토론 종료 찬성"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('renders authoritative submitted and skipped hint history in turn order', async () => {
+    const wrapper = mountLiar()
+    await wrapper.setProps({ publicState: {
+      gameType: 'LIAR', round: 1, phase: 'DISCUSSING', deadlineAt: '2026-08-27T00:00:05Z',
+      hints: [{ playerId: 'host', text: '따뜻해요' }],
+      hintStatuses: [
+        { playerId: 'host', status: 'SUBMITTED' },
+        { playerId: 'departed', status: 'SKIPPED' },
+      ],
+      submittedPlayerIds: [], scores: { host: 0, guest: 0 },
+    } })
+
+    expect(wrapper.get('[data-region="hint-history"]').text()).toContain('방장감자: 따뜻해요')
+    expect(wrapper.get('[data-region="hint-history"]').text()).toContain('departed: 힌트 건너뜀')
   })
 
   it('exposes the phase-specific guess and return actions by their accessible names', async () => {
@@ -106,9 +157,45 @@ describe('LiarGameView', () => {
 
     await wrapper.setProps({ publicState: {
       gameType: 'LIAR', round: 1, phase: 'GAME_RESULT', deadlineAt: '2026-08-27T00:00:05Z',
-      hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 },
+      hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 }, liarId: 'host', answer: '붕어빵',
+      roundResult: { winner: 'LIAR', invalidated: false, liarGuessedCorrectly: false },
+      finalScores: [
+        { actorId: 'departed', nickname: '떠난감자', score: 5, rank: 1, roundsPlayed: 1 },
+        { actorId: 'guest', nickname: '참가감자', score: 5, rank: 1, roundsPlayed: 2 },
+        { actorId: 'host', nickname: '방장감자', score: 2, rank: 3, roundsPlayed: 2 },
+      ],
     } })
     expect(wrapper.get('button[aria-label="대기방으로 돌아가기"]')).toBeDefined()
+    expect(wrapper.get('[data-region="final-ranking"]').text()).toContain('1위 떠난감자 5점')
+    expect(wrapper.get('[data-region="final-ranking"]').text()).toContain('1위 참가감자 5점')
+    expect(wrapper.get('[data-region="final-ranking"]').text()).toContain('3위 방장감자 2점')
+    expect(wrapper.text()).toContain('라이어: 방장감자')
+    expect(wrapper.text()).toContain('제시어: 붕어빵')
+
+    await wrapper.setProps({ isHost: false })
+    expect(wrapper.find('button[aria-label="대기방으로 돌아가기"]').exists()).toBe(false)
+  })
+
+  it('announces a successful liar comeback distinctly from survival and a citizen win', () => {
+    const comeback = mount(LiarGameView, { props: {
+      publicState: {
+        gameType: 'LIAR', round: 1, phase: 'ROUND_RESULT', deadlineAt: '2026-08-27T00:00:05Z',
+        hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 },
+        roundResult: { winner: 'LIAR', invalidated: false, accusedId: 'host', liarGuessedCorrectly: true },
+      },
+      privateState: null, participants, actorId: 'host', isHost: true, connected: true,
+    } })
+    expect(comeback.text()).toContain('라이어가 제시어를 맞혀 역전했습니다.')
+
+    const survival = mount(LiarGameView, { props: {
+      publicState: {
+        gameType: 'LIAR', round: 1, phase: 'ROUND_RESULT', deadlineAt: '2026-08-27T00:00:05Z',
+        hints: [], submittedPlayerIds: [], scores: { host: 0, guest: 0 },
+        roundResult: { winner: 'LIAR', invalidated: false, liarGuessedCorrectly: false },
+      },
+      privateState: null, participants, actorId: 'host', isHost: true, connected: true,
+    } })
+    expect(survival.text()).toContain('라이어가 살아남아 승리했습니다.')
   })
 
   it('disables discussion and guessing inputs after the actor has submitted', async () => {

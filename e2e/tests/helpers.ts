@@ -273,7 +273,10 @@ export async function expectGameResultAndReturn(
   expectedWinner: '라이어' | '시민',
 ): Promise<void> {
   await expectAll(pages, page => page.getByRole('heading', { name: '라운드 결과' }))
-  await expectAll(pages, page => page.getByText(`${expectedWinner}가 승리했습니다.`))
+  const outcome = expectedWinner === '라이어'
+    ? '라이어가 제시어를 맞혀 역전했습니다.'
+    : `${expectedWinner}이 승리했습니다.`
+  await expectAll(pages, page => page.getByText(outcome))
   await expectAll(pages, page => page.getByRole('heading', { name: '최종 결과' }))
   await host.getByRole('button', { name: '대기방으로 돌아가기' }).click()
   await expect(host.getByRole('button', { name: '게임 시작' })).toBeVisible({ timeout: E2E_EXPECT_TIMEOUT })

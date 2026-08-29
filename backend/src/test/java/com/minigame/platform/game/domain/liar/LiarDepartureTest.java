@@ -2,6 +2,7 @@ package com.minigame.platform.game.domain.liar;
 
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.game.domain.GameDeadline;
+import com.minigame.platform.game.domain.GameAction;
 import com.minigame.platform.game.domain.GameContent;
 import com.minigame.platform.game.domain.GamePlayer;
 import com.minigame.platform.game.domain.GameSettings;
@@ -38,6 +39,56 @@ class LiarDepartureTest {
 
         assertThat(((LiarGameState) result.state()).phase()).isEqualTo(LiarPhase.ROUND_RESULT);
         assertThat(result.scoreDeltas()).isEmpty();
+    }
+
+    @Test
+    void submitted_hint_from_a_departed_citizen_remains_in_order_and_projection() {
+        var transition = module.start(context(List.of("a", "b", "c", "d", "e")));
+        var state = (LiarGameState) module.expire(
+                transition.state(), transition.deadline().orElseThrow(), transition.deadline().orElseThrow().at()
+        ).state();
+        ActorId departing;
+        while (true) {
+            var current = state.currentHinter();
+            var submitted = module.handle(
+                    state, current, new GameAction("HINT_SUBMIT", java.util.Map.of("hint", "기억할 힌트 " + state.hintIndex())), NOW
+            );
+            state = (LiarGameState) submitted.state();
+            if (!current.equals(state.liarId())) {
+                departing = current;
+                break;
+            }
+        }
+        var nextHinter = state.currentHinter();
+
+        var departed = (LiarGameState) module.removePlayer(state, departing, NOW).state();
+        var projection = (LiarProjection.PublicState) module.project(departed, nextHinter).publicState();
+
+        assertThat(departed.players()).extracting(GamePlayer::actorId).doesNotContain(departing);
+        assertThat(departed.hintOrder()).contains(departing);
+        assertThat(departed.hints()).containsKey(departing);
+        assertThat(departed.currentHinter()).isEqualTo(nextHinter);
+        assertThat(projection.hints()).extracting(LiarProjection.PublicHint::playerId).contains(departing);
+    }
+
+    @Test
+    void unsubmitted_future_departure_removes_only_that_turn_without_moving_the_current_index() {
+        var transition = module.start(context(List.of("a", "b", "c", "d", "e")));
+        var state = (LiarGameState) module.expire(
+                transition.state(), transition.deadline().orElseThrow(), transition.deadline().orElseThrow().at()
+        ).state();
+        var currentHinter = state.currentHinter();
+        var future = state.hintOrder().stream()
+                .skip(state.hintIndex() + 1L)
+                .filter(actorId -> !actorId.equals(state.liarId()))
+                .findFirst().orElseThrow();
+
+        var departed = (LiarGameState) module.removePlayer(state, future, NOW).state();
+
+        assertThat(departed.hintOrder()).doesNotContain(future);
+        assertThat(departed.hints()).doesNotContainKey(future);
+        assertThat(departed.hintIndex()).isEqualTo(state.hintIndex());
+        assertThat(departed.currentHinter()).isEqualTo(currentHinter);
     }
 
     @Test
@@ -94,7 +145,9 @@ class LiarDepartureTest {
 
         var result = module.synchronizePlayers(state, remaining, NOW);
 
-        assertThat(((LiarGameState) result.state()).phase()).isEqualTo(LiarPhase.GAME_RESULT);
+        var gameResult = (LiarGameState) result.state();
+        assertThat(gameResult.phase()).isEqualTo(LiarPhase.GAME_RESULT);
+        assertThat(gameResult.players()).containsExactlyElementsOf(remaining);
         assertThat(result.scoreDeltas()).isEmpty();
     }
 

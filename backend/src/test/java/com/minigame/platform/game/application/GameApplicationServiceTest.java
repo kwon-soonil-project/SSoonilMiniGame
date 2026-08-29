@@ -112,6 +112,21 @@ class GameApplicationServiceTest {
     }
 
     @Test
+    void the_same_action_request_id_is_processed_once_for_each_actor() {
+        service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
+        advanceToVoting();
+        var players = state().players().stream().map(player -> player.actorId()).toList();
+        var sharedRequestId = RoomFixture.requestId("publicly-observed-action-id");
+
+        service.act(principal(players.get(0)), RoomFixture.ROOM_ID, sharedRequestId,
+                "VOTE_SUBMIT", Map.of("targetActorId", players.get(2).value()));
+        service.act(principal(players.get(1)), RoomFixture.ROOM_ID, sharedRequestId,
+                "VOTE_SUBMIT", Map.of("targetActorId", players.get(2).value()));
+
+        assertThat(state().votes()).containsKeys(players.get(0), players.get(1));
+    }
+
+    @Test
     void real_requester_projection_has_private_role_while_public_state_stays_secret() {
         service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
         var room = snapshot();
@@ -285,6 +300,63 @@ class GameApplicationServiceTest {
         service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
 
         assertThat(content.selectCalls).isZero();
+    }
+
+    @Test
+    void unsupported_game_start_tokens_stop_before_content_schedule_and_session_work() {
+        for (var gameType : List.of(
+                com.minigame.platform.room.domain.GameType.DRAWING,
+                com.minigame.platform.room.domain.GameType.CHOSUNG,
+                com.minigame.platform.room.domain.GameType.MAJORITY
+        )) {
+            rooms.withRoom(RoomFixture.ROOM_ID, room -> {
+                var events = new ArrayList<com.minigame.platform.room.domain.RoomEvent>();
+                events.addAll(room.updateSettings(
+                        RoomFixture.HOST,
+                        new com.minigame.platform.room.domain.RoomSettings(
+                                gameType, gameType.maximumParticipants(), 1, 30, 90, "all"
+                        ),
+                        RoomFixture.requestId("unsupported-settings-" + gameType)
+                ));
+                for (var actorId : List.of(RoomFixture.GUEST_1, RoomFixture.GUEST_2, RoomFixture.GUEST_3)) {
+                    events.addAll(room.changeReady(
+                            actorId, true, RoomFixture.requestId("unsupported-ready-" + gameType + actorId.value())
+                    ));
+                }
+                return events;
+            });
+
+            assertThatThrownBy(() -> service.start(
+                    HOST, RoomFixture.ROOM_ID, RoomFixture.requestId("unsupported-start-" + gameType)
+            )).isInstanceOfSatisfying(GameRuleViolation.class,
+                    error -> assertThat(error.code()).isEqualTo("GAME_TYPE_UNSUPPORTED"));
+
+            assertThat(content.selectCalls).isZero();
+            assertThat(scheduler.scheduled).isEmpty();
+            assertThat(sessions.started).isEmpty();
+            assertThat(snapshot().gameRuntime()).isEmpty();
+        }
+    }
+
+    @Test
+    void failure_after_running_session_persistence_interrupts_the_orphan_and_keeps_start_retryable() {
+        sessions.duringStart = () -> rooms.withRoom(RoomFixture.ROOM_ID, room -> room.updateSettings(
+                RoomFixture.HOST,
+                new com.minigame.platform.room.domain.RoomSettings(
+                        com.minigame.platform.room.domain.GameType.LIAR, 10, 2, 30, 90, "changed-after-persist"
+                ),
+                RoomFixture.requestId("post-persist-settings-race")
+        ));
+
+        assertThatThrownBy(() -> service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST))
+                .isInstanceOfSatisfying(GameRuleViolation.class,
+                        error -> assertThat(error.code()).isEqualTo("GAME_START_STATE_CHANGED"));
+
+        assertThat(snapshot().status()).isEqualTo(com.minigame.platform.room.domain.RoomStatus.WAITING);
+        assertThat(snapshot().gameRuntime()).isEmpty();
+        assertThat(sessions.started).hasSize(1);
+        assertThat(sessions.interrupted).containsExactly(sessions.started.getFirst().sessionId());
+        assertThat(scheduler.active()).isNull();
     }
 
     @Test
@@ -463,6 +535,60 @@ class GameApplicationServiceTest {
         assertThat(state().phase()).isEqualTo(LiarPhase.GAME_RESULT);
         assertThat(sessions.completed).hasSize(1);
         assertThat(oldSchedule.cancelled).isTrue();
+    }
+
+    @Test
+    void promoted_subminimum_roster_is_persisted_and_committed_together_after_retry() {
+        service.start(HOST, RoomFixture.ROOM_ID, START_REQUEST);
+        var spectator = new ActorId("prospective-final-spectator");
+        rooms.withRoom(RoomFixture.ROOM_ID, room -> room.join(
+                spectator, "최종승격", false, RoomFixture.requestId("prospective-final-join")
+        ));
+        var departing = state().players().stream()
+                .map(player -> player.actorId())
+                .filter(actorId -> !actorId.equals(RoomFixture.HOST))
+                .filter(actorId -> !actorId.equals(state().liarId()))
+                .limit(2)
+                .toList();
+        assertThat(departing).hasSize(2);
+        for (var actorId : departing) {
+            rooms.withRoomValue(RoomFixture.ROOM_ID, room -> {
+                service.participantLeft(room, actorId, clock.instant());
+                room.leave(actorId, RoomFixture.requestId("prospective-final-leave-" + actorId.value()));
+                return null;
+            });
+        }
+        var roundResult = state();
+        var oldSchedule = scheduler.active();
+        clock.set(roundResult.deadlineAt());
+        sessions.failComplete = true;
+
+        oldSchedule.fire();
+
+        assertThat(oldSchedule.failures).isEqualTo(1);
+        assertThat(state()).isEqualTo(roundResult);
+        assertThat(snapshot().participants())
+                .filteredOn(participant -> participant.actorId().equals(spectator))
+                .allMatch(participant -> participant.spectator());
+        assertThat(snapshot().gameRuntime().orElseThrow().scores()).doesNotContainKey(spectator);
+
+        oldSchedule.fire();
+
+        assertThat(state().phase()).isEqualTo(LiarPhase.GAME_RESULT);
+        assertThat(state().players()).extracting(player -> player.actorId()).contains(spectator);
+        assertThat(snapshot().participants())
+                .filteredOn(participant -> participant.actorId().equals(spectator))
+                .allMatch(participant -> !participant.spectator());
+        assertThat(snapshot().gameRuntime().orElseThrow().scores()).containsEntry(spectator, 0);
+        assertThat(sessions.results).singleElement().satisfies(results -> assertThat(results)
+                .anySatisfy(result -> {
+                    assertThat(result.nickname()).isEqualTo("최종승격");
+                    assertThat(result.score()).isZero();
+                    assertThat(result.roundsPlayed()).isZero();
+                }));
+        assertThat((List<?>) ((Map<?, ?>) service.snapshot(snapshot(), RoomFixture.HOST)
+                .orElseThrow().publicState()).get("finalScores"))
+                .anySatisfy(entry -> assertThat(((Map<?, ?>) entry).get("nickname")).isEqualTo("최종승격"));
     }
 
     @Test
@@ -791,6 +917,7 @@ class GameApplicationServiceTest {
         private boolean failStart;
         private boolean failComplete;
         private boolean failInterrupt;
+        private Runnable duringStart;
 
         private RecordingSessions(List<String> operations) {
             this.operations = operations;
@@ -805,6 +932,11 @@ class GameApplicationServiceTest {
             }
             started.add(command);
             running.add(command.sessionId());
+            if (duringStart != null) {
+                var callback = duringStart;
+                duringStart = null;
+                callback.run();
+            }
             return command.sessionId();
         }
 

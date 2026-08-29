@@ -24,17 +24,30 @@ class GameRuntimeTest {
                 .mapToObj(index -> new UUID(0, index))
                 .toList();
 
-        requestIds.subList(0, 1_024).forEach(requestId -> assertThat(runtime.markRequestProcessed(requestId)).isTrue());
-        assertThat(runtime.markRequestProcessed(requestIds.getFirst())).isFalse();
+        requestIds.subList(0, 1_024).forEach(requestId -> assertThat(runtime.markRequestProcessed(PLAYER_ID, requestId)).isTrue());
+        assertThat(runtime.markRequestProcessed(PLAYER_ID, requestIds.getFirst())).isFalse();
 
-        assertThat(runtime.markRequestProcessed(requestIds.getLast())).isTrue();
+        assertThat(runtime.markRequestProcessed(PLAYER_ID, requestIds.getLast())).isTrue();
         assertThat(runtime.processedRequestCount()).isEqualTo(1_024);
-        assertThat(runtime.hasProcessedRequest(requestIds.getFirst())).isFalse();
-        assertThat(runtime.hasProcessedRequest(requestIds.get(1))).isTrue();
+        assertThat(runtime.hasProcessedRequest(PLAYER_ID, requestIds.getFirst())).isFalse();
+        assertThat(runtime.hasProcessedRequest(PLAYER_ID, requestIds.get(1))).isTrue();
 
-        assertThat(runtime.markRequestProcessed(requestIds.getFirst())).isTrue();
-        assertThat(runtime.hasProcessedRequest(requestIds.get(1))).isFalse();
-        assertThat(runtime.hasProcessedRequest(requestIds.getFirst())).isTrue();
+        assertThat(runtime.markRequestProcessed(PLAYER_ID, requestIds.getFirst())).isTrue();
+        assertThat(runtime.hasProcessedRequest(PLAYER_ID, requestIds.get(1))).isFalse();
+        assertThat(runtime.hasProcessedRequest(PLAYER_ID, requestIds.getFirst())).isTrue();
+    }
+
+    @Test
+    void treats_the_same_public_request_id_as_distinct_for_each_actor() {
+        var runtime = runtime();
+        var requestId = new UUID(0, 77);
+        var otherPlayer = new ActorId("other-runtime-player");
+
+        assertThat(runtime.markRequestProcessed(PLAYER_ID, requestId)).isTrue();
+        assertThat(runtime.markRequestProcessed(otherPlayer, requestId)).isTrue();
+        assertThat(runtime.markRequestProcessed(PLAYER_ID, requestId)).isFalse();
+        assertThat(runtime.hasProcessedRequest(otherPlayer, requestId)).isTrue();
+        assertThat(runtime.processedRequestCount()).isEqualTo(2);
     }
 
     @Test
@@ -46,7 +59,7 @@ class GameRuntimeTest {
             var results = executor.invokeAll(java.util.stream.IntStream.range(0, 128)
                     .<Callable<Boolean>>mapToObj(ignored -> () -> {
                         runtime.applyScoreDeltas(Map.of(PLAYER_ID, 1));
-                        return runtime.markRequestProcessed(sharedRequest);
+                        return runtime.markRequestProcessed(PLAYER_ID, sharedRequest);
                     })
                     .toList());
 

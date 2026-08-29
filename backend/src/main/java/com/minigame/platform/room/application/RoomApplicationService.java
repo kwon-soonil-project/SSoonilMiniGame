@@ -286,7 +286,7 @@ public class RoomApplicationService {
                 abuseLimiter.passwordSucceeded(actor.actorId(), current.id(), clientFingerprint);
             }
             var events = room.join(actor.actorId(), actor.nickname(), false, requestId);
-            publishRoomEvents(current.id(), actor, requestId, events);
+            publishRoomEvents(room.snapshot(), actor, requestId, events);
             if (!events.isEmpty()) {
                 publishLobbyUpsert(room.snapshot(), actor, requestId);
             }
@@ -341,9 +341,9 @@ public class RoomApplicationService {
                 }
             }
             var events = room.leave(actor.actorId(), requestId);
-            safePublish(() -> publishRoomEvents(roomId, actor, requestId, events));
+            var snapshot = room.snapshot();
+            safePublish(() -> publishRoomEvents(snapshot, actor, requestId, events));
             if (!events.isEmpty()) {
-                var snapshot = room.snapshot();
                 if (snapshot.status() == RoomStatus.CLOSED) {
                     safePublish(() -> publishLobbyRemove(snapshot, actor, requestId));
                 } else {
@@ -371,7 +371,7 @@ public class RoomApplicationService {
         Objects.requireNonNull(actor, "actor");
         var result = repository.withRoom(roomId, room -> {
             var events = room.changeReady(actor.actorId(), ready, requestId);
-            publishRoomEvents(roomId, actor, requestId, events);
+            publishRoomEvents(room.snapshot(), actor, requestId, events);
             return events;
         });
         return snapshotView(result.snapshot(), actor.actorId());
@@ -386,7 +386,7 @@ public class RoomApplicationService {
         Objects.requireNonNull(actor, "actor");
         var result = repository.withRoom(roomId, room -> {
             var events = room.updateSettings(actor.actorId(), settings, requestId);
-            publishRoomEvents(roomId, actor, requestId, events);
+            publishRoomEvents(room.snapshot(), actor, requestId, events);
             if (!events.isEmpty()) {
                 publishLobbyUpsert(room.snapshot(), actor, requestId);
             }
@@ -517,23 +517,27 @@ public class RoomApplicationService {
     }
 
     private void publishRoomEvents(
-            RoomId roomId,
+            Room.Snapshot room,
             ActorPrincipal actor,
             String requestId,
             List<RoomEvent> events
     ) {
+        if (events.isEmpty()) {
+            return;
+        }
+        var canStart = games == null ? room.participantsReadyToStart() : games.canStart(room);
         for (var event : events) {
             if (event instanceof RoomEvent.ChatAccepted) {
                 continue;
             }
             eventPublisher.publishPublic(EventEnvelope.create(
                     requestId,
-                    roomId,
+                    room.id(),
                     actor,
                     eventType(event),
                     event.sequence(),
                     clock,
-                    eventPayload(event)
+                    eventPayload(event, canStart)
             ));
         }
     }
@@ -614,19 +618,19 @@ public class RoomApplicationService {
         };
     }
 
-    private static Object eventPayload(RoomEvent event) {
+    private static Object eventPayload(RoomEvent event, boolean canStart) {
         return switch (event) {
             case RoomEvent.ParticipantJoined joined -> Map.of(
                     "actorId", joined.participant().actorId().value(),
                     "nickname", joined.participant().nickname(),
                     "ready", joined.participant().ready(),
                     "spectator", joined.participant().spectator(),
-                    "canStart", joined.canStart()
+                    "canStart", canStart
             );
             case RoomEvent.ReadyChanged changed -> Map.of(
                     "actorId", changed.actorId().value(),
                     "ready", changed.ready(),
-                    "canStart", changed.canStart()
+                    "canStart", canStart
             );
             case RoomEvent.SettingsUpdated updated -> Map.of(
                     "gameType", updated.settings().gameType(),
@@ -635,16 +639,16 @@ public class RoomApplicationService {
                     "actionSeconds", updated.settings().actionSeconds(),
                     "discussionSeconds", updated.settings().discussionSeconds(),
                     "categoryPack", updated.settings().categoryPack(),
-                    "canStart", updated.canStart()
+                    "canStart", canStart
             );
             case RoomEvent.HostTransferred transferred -> Map.of(
                     "previousHostId", transferred.previousHostId().value(),
                     "newHostId", transferred.newHostId().value(),
-                    "canStart", transferred.canStart()
+                    "canStart", canStart
             );
             case RoomEvent.ParticipantLeft left -> Map.of(
                     "actorId", left.actorId().value(),
-                    "canStart", left.canStart()
+                    "canStart", canStart
             );
             case RoomEvent.RoomClosed ignored -> Map.of();
             case RoomEvent.ChatAccepted ignored -> Map.of();

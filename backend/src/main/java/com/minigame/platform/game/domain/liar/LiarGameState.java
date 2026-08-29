@@ -77,14 +77,21 @@ public record LiarGameState(
             if (invalidated != "INVALIDATED".equals(winner)) {
                 throw new IllegalArgumentException("invalidated");
             }
+            if (liarGuessedCorrectly && (!"LIAR".equals(winner) || accusedId == null)) {
+                throw new IllegalArgumentException("liar comeback");
+            }
         }
 
         public static RoundResult liarSurvived() {
             return new RoundResult("LIAR", false, null, false);
         }
 
-        public static RoundResult citizensWon(ActorId accusedId, boolean liarGuessedCorrectly) {
-            return new RoundResult("CITIZENS", false, Objects.requireNonNull(accusedId, "accusedId"), liarGuessedCorrectly);
+        public static RoundResult liarComeback(ActorId accusedId) {
+            return new RoundResult("LIAR", false, Objects.requireNonNull(accusedId, "accusedId"), true);
+        }
+
+        public static RoundResult citizensWon(ActorId accusedId) {
+            return new RoundResult("CITIZENS", false, Objects.requireNonNull(accusedId, "accusedId"), false);
         }
 
         public static RoundResult invalidatedRound() {

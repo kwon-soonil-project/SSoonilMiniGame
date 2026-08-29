@@ -14,11 +14,11 @@ public final class LiarScoring {
         if (result.invalidated()) {
             return Map.of();
         }
-        if ("LIAR".equals(result.winner())) {
-            return Map.of(state.liarId(), 3);
-        }
         if (result.liarGuessedCorrectly()) {
             return Map.of(state.liarId(), 2);
+        }
+        if ("LIAR".equals(result.winner())) {
+            return Map.of(state.liarId(), 3);
         }
         var scores = new LinkedHashMap<ActorId, Integer>();
         state.players().stream()

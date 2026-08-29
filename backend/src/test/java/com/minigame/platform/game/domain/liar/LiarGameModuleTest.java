@@ -61,7 +61,11 @@ class LiarGameModuleTest {
 
         assertThat(publicState.phase()).isEqualTo(LiarPhase.ROLE_REVEAL);
         assertThat(publicState.hints()).isEmpty();
+        assertThat(publicState.hintStatuses()).isEmpty();
         assertThat(publicState.submittedPlayerIds()).isEmpty();
+        assertThat(publicState.revoteCandidates()).isEmpty();
+        assertThat(publicState.liarId()).isNull();
+        assertThat(publicState.answer()).isNull();
         assertThat(publicState.toString()).doesNotContain("붕어빵", "fish-bread", state.liarId().value());
         assertThat(transition.transition().signals()).allSatisfy(signal -> {
             assertThat(signal.recipient()).isEmpty();
@@ -133,6 +137,11 @@ class LiarGameModuleTest {
         assertThat(publicState.hints()).containsExactly(
                 new LiarProjection.PublicHint(firstActor, "첫 번째 힌트"),
                 new LiarProjection.PublicHint(thirdActor, "세 번째 힌트")
+        );
+        assertThat(publicState.hintStatuses()).containsExactly(
+                new LiarProjection.PublicHintStatus(firstActor, "SUBMITTED"),
+                new LiarProjection.PublicHintStatus(skippedActor, "SKIPPED"),
+                new LiarProjection.PublicHintStatus(thirdActor, "SUBMITTED")
         );
         assertThat(((LiarProjection.PublicState) module.project(finalState, thirdActor).publicState()).hints())
                 .containsExactlyElementsOf(publicState.hints());

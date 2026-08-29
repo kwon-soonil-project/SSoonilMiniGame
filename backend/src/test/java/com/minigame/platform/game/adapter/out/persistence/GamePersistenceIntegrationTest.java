@@ -4,6 +4,7 @@ import com.minigame.platform.game.application.GameSessionPort;
 import com.minigame.platform.game.application.GameSessionNotRunningException;
 import com.minigame.platform.game.application.LiarContentPort;
 import com.minigame.platform.room.domain.GameType;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -44,6 +45,12 @@ class GamePersistenceIntegrationTest {
 
     @Autowired
     private GameSessionPort gameSessions;
+
+    @BeforeEach
+    void isolateGameSessionState() {
+        jdbc.update("delete from game_participants");
+        jdbc.update("delete from game_sessions");
+    }
 
     @Test
     void migrations_seed_eight_liar_categories_with_fifty_unique_items_each() {

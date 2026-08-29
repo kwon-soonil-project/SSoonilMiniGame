@@ -71,6 +71,26 @@ class LiarVotingTest {
     }
 
     @Test
+    void public_revote_projection_exposes_exactly_the_first_vote_tie_candidates() {
+        var state = voting();
+        var players = state.players().stream().map(GamePlayer::actorId).toList();
+        var firstTargets = List.of(players.get(1), players.get(0), players.get(1), players.get(0));
+        for (int index = 0; index < players.size(); index++) {
+            state = (LiarGameState) module.handle(
+                    state,
+                    players.get(index),
+                    action("VOTE_SUBMIT", Map.of("targetActorId", firstTargets.get(index).value())),
+                    NOW
+            ).state();
+        }
+
+        var publicState = (LiarProjection.PublicState) module.project(state, players.get(2)).publicState();
+
+        assertThat(state.phase()).isEqualTo(LiarPhase.REVOTING);
+        assertThat(publicState.revoteCandidates()).containsExactlyInAnyOrder(players.get(0), players.get(1));
+    }
+
+    @Test
     void full_abstention_on_voting_timeout_awards_liar_three_points() {
         var state = voting();
         var deadline = new GameDeadline(state.sessionId(), state.round(), state.phaseVersion(), state.deadlineAt());
@@ -79,6 +99,10 @@ class LiarVotingTest {
 
         assertThat(((LiarGameState) result.state()).phase()).isEqualTo(LiarPhase.ROUND_RESULT);
         assertThat(result.scoreDeltas()).containsEntry(state.liarId(), 3);
+        var publicState = (LiarProjection.PublicState) module.project(result.state(), state.players().getFirst().actorId()).publicState();
+        assertThat(publicState.liarId()).isEqualTo(state.liarId());
+        assertThat(publicState.answer()).isEqualTo(state.word().answer());
+        assertThat(publicState.roundResult()).isEqualTo(((LiarGameState) result.state()).roundResult());
     }
 
     @Test
@@ -87,7 +111,10 @@ class LiarVotingTest {
 
         var result = module.handle(state, state.liarId(), action("LIAR_GUESS_SUBMIT", Map.of("answer", " Fish-bread! ")), NOW);
 
-        assertThat(((LiarGameState) result.state()).roundResult().liarGuessedCorrectly()).isTrue();
+        assertThat(((LiarGameState) result.state()).roundResult()).satisfies(roundResult -> {
+            assertThat(roundResult.winner()).isEqualTo("LIAR");
+            assertThat(roundResult.liarGuessedCorrectly()).isTrue();
+        });
         assertThat(result.scoreDeltas()).containsOnly(Map.entry(state.liarId(), 2));
     }
 
@@ -98,7 +125,10 @@ class LiarVotingTest {
 
         var result = module.expire(state, deadline, deadline.at());
 
-        assertThat(((LiarGameState) result.state()).roundResult().liarGuessedCorrectly()).isFalse();
+        assertThat(((LiarGameState) result.state()).roundResult()).satisfies(roundResult -> {
+            assertThat(roundResult.winner()).isEqualTo("CITIZENS");
+            assertThat(roundResult.liarGuessedCorrectly()).isFalse();
+        });
         assertThat(result.scoreDeltas()).hasSize(3).doesNotContainKey(state.liarId());
         assertThat(result.scoreDeltas().values()).allMatch(score -> score == 1);
     }

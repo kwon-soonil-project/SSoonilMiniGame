@@ -28,7 +28,7 @@ public final class GameRuntime {
     private final Map<ActorId, String> playerNicknames = new LinkedHashMap<>();
     private final Map<ActorId, Integer> roundsPlayed = new LinkedHashMap<>();
     private final Set<UUID> usedContentIds = new LinkedHashSet<>();
-    private final LinkedHashSet<UUID> processedRequestIds = new LinkedHashSet<>();
+    private final LinkedHashSet<ProcessedRequest> processedRequests = new LinkedHashSet<>();
 
     public GameRuntime(UUID sessionId, GameType gameType, GameState state, List<GamePlayer> players) {
         this(sessionId, gameType, state, players, Set.of());
@@ -133,23 +133,29 @@ public final class GameRuntime {
         return usedContentIds.add(Objects.requireNonNull(contentId, "contentId"));
     }
 
-    public synchronized boolean markRequestProcessed(UUID requestId) {
-        Objects.requireNonNull(requestId, "requestId");
-        if (!processedRequestIds.add(requestId)) {
+    public synchronized boolean markRequestProcessed(ActorId actorId, UUID requestId) {
+        var request = new ProcessedRequest(
+                Objects.requireNonNull(actorId, "actorId"),
+                Objects.requireNonNull(requestId, "requestId")
+        );
+        if (!processedRequests.add(request)) {
             return false;
         }
-        if (processedRequestIds.size() > MAX_PROCESSED_REQUEST_IDS) {
-            processedRequestIds.remove(processedRequestIds.getFirst());
+        if (processedRequests.size() > MAX_PROCESSED_REQUEST_IDS) {
+            processedRequests.remove(processedRequests.getFirst());
         }
         return true;
     }
 
-    public synchronized boolean hasProcessedRequest(UUID requestId) {
-        return processedRequestIds.contains(Objects.requireNonNull(requestId, "requestId"));
+    public synchronized boolean hasProcessedRequest(ActorId actorId, UUID requestId) {
+        return processedRequests.contains(new ProcessedRequest(
+                Objects.requireNonNull(actorId, "actorId"),
+                Objects.requireNonNull(requestId, "requestId")
+        ));
     }
 
     public synchronized int processedRequestCount() {
-        return processedRequestIds.size();
+        return processedRequests.size();
     }
 
     public synchronized Snapshot snapshot() {
@@ -182,5 +188,8 @@ public final class GameRuntime {
             roundsPlayed = Map.copyOf(roundsPlayed);
             usedContentIds = Set.copyOf(usedContentIds);
         }
+    }
+
+    private record ProcessedRequest(ActorId actorId, UUID requestId) {
     }
 }

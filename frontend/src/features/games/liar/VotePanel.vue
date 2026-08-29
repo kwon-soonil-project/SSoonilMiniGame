@@ -2,11 +2,16 @@
 import { ref, watch } from 'vue'
 import type { RoomParticipant } from '../../room/roomStore'
 
-const props = defineProps<{ participants: RoomParticipant[]; actorId: string; disabled: boolean; revote: boolean }>()
+const props = defineProps<{ participants: RoomParticipant[]; actorId: string; disabled: boolean; revote: boolean; candidateIds?: string[] }>()
 const emit = defineEmits<{ submit: [targetId: string] }>()
 const targetId = ref('')
 watch(() => props.revote, () => { targetId.value = '' })
-const candidates = () => props.participants.filter(participant => participant.actorId !== props.actorId && !participant.spectator)
+const candidates = () => {
+  const legalRevoteCandidates = new Set(props.candidateIds ?? [])
+  return props.participants.filter(participant => participant.actorId !== props.actorId
+    && !participant.spectator
+    && (!props.revote || legalRevoteCandidates.has(participant.actorId)))
+}
 
 function submit(): void {
   if (!targetId.value || props.disabled) return

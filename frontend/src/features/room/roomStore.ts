@@ -448,6 +448,11 @@ export const useRoomStore = defineStore('room', () => {
       case 'PLAYER_LEFT':
         room.participants = room.participants.filter(item => item.actorId !== payload.actorId)
         break
+      case 'PLAYER_SPECTATOR_CHANGED': {
+        const participant = room.participants.find(item => item.actorId === payload.actorId)
+        if (participant && typeof payload.spectator === 'boolean') participant.spectator = payload.spectator
+        break
+      }
       case 'ROOM_CLOSED':
         room.status = 'CLOSED'
         error.value = '방이 종료되었습니다.'

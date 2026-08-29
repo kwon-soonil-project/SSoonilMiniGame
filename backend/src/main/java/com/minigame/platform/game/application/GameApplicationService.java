@@ -108,6 +108,7 @@ public class GameApplicationService {
                 return;
             }
             var expected = token.orElseThrow();
+            requireSupportedStart(expected);
             var selected = selectContent(expected.settings(), new LinkedHashSet<>(expected.recentContentIds()));
             rooms.withRoomValue(roomId, room -> {
                 Optional<Room.GameStartToken> current;
@@ -141,6 +142,7 @@ public class GameApplicationService {
                 );
                 runtime.applyScoreDeltas(transition.scoreDeltas());
                 var prepared = prepareSchedule(roomId, transition.deadline());
+                var persisted = false;
                 try {
                     sessions.start(new GameSessionPort.StartGameSession(
                             sessionId,
@@ -149,14 +151,23 @@ public class GameApplicationService {
                             settingsJson(gameSettings),
                             clock.instant()
                     ));
+                    persisted = true;
+                    List<RoomEvent> events;
+                    try {
+                        events = room.startGame(actor.actorId(), requestId, expected, runtime);
+                    } catch (com.minigame.platform.room.domain.RoomRuleViolation exception) {
+                        throw violation("GAME_START_STATE_CHANGED");
+                    }
+                    commitSchedule(roomId, prepared);
+                    publishGameState(room, actor, requestId, events.getLast().sequence());
+                    publishLobbyUpsert(room.snapshot(), actor, requestId);
                 } catch (RuntimeException exception) {
                     prepared.cancel();
+                    if (persisted) {
+                        compensatePersistedStart(sessionId, exception);
+                    }
                     throw exception;
                 }
-                var events = room.startGame(actor.actorId(), requestId, expected, runtime);
-                commitSchedule(roomId, prepared);
-                publishGameState(room, actor, requestId, events.getLast().sequence());
-                publishLobbyUpsert(room.snapshot(), actor, requestId);
                 return null;
             });
         } finally {
@@ -194,7 +205,7 @@ public class GameApplicationService {
                 return null;
             }
             var runtime = room.gameRuntime().orElseThrow(() -> violation("GAME_NOT_RUNNING"));
-            if (runtime.hasProcessedRequest(requestUuid)) {
+            if (runtime.hasProcessedRequest(actor.actorId(), requestUuid)) {
                 return null;
             }
             if ("DISCUSSION_END_PROPOSE".equals(gameAction.type())) {
@@ -324,7 +335,7 @@ public class GameApplicationService {
         var prepared = prepareSchedule(room.snapshot().id(), transition.deadline());
         try {
             if (enteredGameResult(previous, transition.state())) {
-                completeSession(runtime, transition.scoreDeltas(), now);
+                completeSession(runtime, transition.scoreDeltas(), synchronizedPlayers, now);
             }
         } catch (RuntimeException exception) {
             prepared.cancel();
@@ -338,7 +349,7 @@ public class GameApplicationService {
         }
         runtime.replaceState(transition.state());
         runtime.applyScoreDeltas(transition.scoreDeltas());
-        processedRequest.ifPresent(runtime::markRequestProcessed);
+        processedRequest.ifPresent(request -> runtime.markRequestProcessed(actor.actorId(), request));
         var events = promotions.isEmpty()
                 ? room.replaceGame(runtime)
                 : room.replaceGameAndPromote(runtime, promotions);
@@ -347,11 +358,23 @@ public class GameApplicationService {
         publishGameState(room, actor, requestId, events.getLast().sequence());
     }
 
-    private void completeSession(GameRuntime runtime, Map<ActorId, Integer> deltas, Instant now) {
+    private void completeSession(
+            GameRuntime runtime,
+            Map<ActorId, Integer> deltas,
+            List<com.minigame.platform.game.domain.GamePlayer> prospectivePlayers,
+            Instant now
+    ) {
         var scores = new LinkedHashMap<>(runtime.scores());
         deltas.forEach((actorId, delta) -> scores.merge(actorId, delta, Integer::sum));
-        var nicknames = runtime.playerNicknames();
-        var rounds = runtime.roundsPlayed();
+        var nicknames = new LinkedHashMap<>(runtime.playerNicknames());
+        var rounds = new LinkedHashMap<>(runtime.roundsPlayed());
+        if (prospectivePlayers != null) {
+            for (var player : prospectivePlayers) {
+                scores.putIfAbsent(player.actorId(), 0);
+                nicknames.putIfAbsent(player.actorId(), player.nickname());
+                rounds.putIfAbsent(player.actorId(), 0);
+            }
+        }
         var results = scores.entrySet().stream()
                 .sorted(Map.Entry.<ActorId, Integer>comparingByValue().reversed()
                         .thenComparing(entry -> entry.getKey().value()))
@@ -461,7 +484,9 @@ public class GameApplicationService {
 
     private GameSnapshotView snapshot(GameRuntime.Snapshot runtime, ActorId viewer) {
         var projected = modules.get(runtime.gameType()).project(runtime.state(), viewer);
-        var publicState = publicState(projected.publicState(), runtime.scores());
+        var publicState = publicState(
+                projected.publicState(), runtime.scores(), runtime.playerNicknames(), runtime.roundsPlayed()
+        );
         var privateState = projected.privateState().map(this::privateState).orElse(null);
         return new GameSnapshotView(publicState, privateState);
     }
@@ -474,7 +499,12 @@ public class GameApplicationService {
         }
     }
 
-    private Object publicState(GameProjection.View view, Map<ActorId, Integer> scores) {
+    private Object publicState(
+            GameProjection.View view,
+            Map<ActorId, Integer> scores,
+            Map<ActorId, String> nicknames,
+            Map<ActorId, Integer> roundsPlayed
+    ) {
         if (!(view instanceof LiarProjection.PublicState state)) {
             throw new IllegalArgumentException("Unsupported game projection");
         }
@@ -489,10 +519,19 @@ public class GameApplicationService {
         result.put("hints", state.hints().stream().map(hint -> Map.of(
                 "playerId", hint.playerId().value(), "text", hint.text()
         )).toList());
+        result.put("hintStatuses", state.hintStatuses().stream().map(status -> Map.of(
+                "playerId", status.playerId().value(), "status", status.status()
+        )).toList());
         result.put("submittedPlayerIds", state.submittedPlayerIds().stream()
                 .map(ActorId::value).sorted().toList());
+        if (state.phase() == LiarPhase.REVOTING) {
+            result.put("revoteCandidates", state.revoteCandidates().stream()
+                    .map(ActorId::value).sorted().toList());
+        }
         result.put("scores", stringScores(scores));
         if (state.roundResult() != null) {
+            result.put("liarId", state.liarId().value());
+            result.put("answer", state.answer());
             var round = new LinkedHashMap<String, Object>();
             round.put("winner", state.roundResult().winner());
             round.put("invalidated", state.roundResult().invalidated());
@@ -501,6 +540,19 @@ public class GameApplicationService {
             }
             round.put("liarGuessedCorrectly", state.roundResult().liarGuessedCorrectly());
             result.put("roundResult", round);
+        }
+        if (state.phase() == LiarPhase.GAME_RESULT) {
+            result.put("finalScores", scores.entrySet().stream()
+                    .sorted(Map.Entry.<ActorId, Integer>comparingByValue().reversed()
+                            .thenComparing(entry -> entry.getKey().value()))
+                    .map(entry -> Map.of(
+                            "actorId", entry.getKey().value(),
+                            "nickname", nicknames.getOrDefault(entry.getKey(), entry.getKey().value()),
+                            "score", entry.getValue(),
+                            "rank", 1 + scores.values().stream().filter(score -> score > entry.getValue()).count(),
+                            "roundsPlayed", roundsPlayed.getOrDefault(entry.getKey(), 0)
+                    ))
+                    .toList());
         }
         return Map.copyOf(result);
     }
@@ -566,6 +618,25 @@ public class GameApplicationService {
             throw violation("GAME_CONTENT_UNAVAILABLE");
         }
         return selected;
+    }
+
+    private void requireSupportedStart(Room.GameStartToken token) {
+        var gameType = token.settings().gameType();
+        if (gameType != GameType.LIAR || modules.find(gameType).isEmpty()) {
+            throw violation("GAME_TYPE_UNSUPPORTED");
+        }
+    }
+
+    private void compensatePersistedStart(UUID sessionId, RuntimeException original) {
+        try {
+            if (!sessions.interrupt(sessionId, clock.instant())) {
+                original.addSuppressed(new IllegalStateException(
+                        "Persisted game session could not be interrupted: " + sessionId
+                ));
+            }
+        } catch (RuntimeException compensationFailure) {
+            original.addSuppressed(compensationFailure);
+        }
     }
 
     private static boolean matches(GameRuntime runtime, GameDeadline expected) {
