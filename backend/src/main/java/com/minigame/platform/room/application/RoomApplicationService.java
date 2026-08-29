@@ -467,7 +467,7 @@ public class RoomApplicationService {
                 room.visibility(),
                 room.settings().gameType(),
                 room.status(),
-                games == null ? room.participantsReadyToStart() : games.canStart(room),
+                canStartSafely(room),
                 room.passwordProtected(),
                 activeParticipantCount(room),
                 room.settings().maxParticipants(),
@@ -525,7 +525,7 @@ public class RoomApplicationService {
         if (events.isEmpty()) {
             return;
         }
-        var canStart = games == null ? room.participantsReadyToStart() : games.canStart(room);
+        var canStart = canStartSafely(room);
         for (var event : events) {
             if (event instanceof RoomEvent.ChatAccepted) {
                 continue;
@@ -539,6 +539,19 @@ public class RoomApplicationService {
                     clock,
                     eventPayload(event, canStart)
             ));
+        }
+    }
+
+    private boolean canStartSafely(Room.Snapshot room) {
+        if (games == null) {
+            return room.participantsReadyToStart();
+        }
+        try {
+            return games.canStart(room);
+        } catch (RuntimeException exception) {
+            log.warn("Game start eligibility lookup failed; disabling start until the next authoritative snapshot",
+                    exception);
+            return false;
         }
     }
 

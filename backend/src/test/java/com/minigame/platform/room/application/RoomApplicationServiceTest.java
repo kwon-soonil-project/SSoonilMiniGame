@@ -267,6 +267,44 @@ class RoomApplicationServiceTest {
     }
 
     @Test
+    void eligibility_lookup_failure_does_not_lose_an_already_accepted_room_change_or_event() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var games = mock(GameApplicationService.class);
+        when(games.canStart(any())).thenReturn(false);
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                publisher,
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+        var created = service.create(HOST, "조회 실패 방", Visibility.PRIVATE, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        service.join(GUEST, new RoomCode(created.code()), null,
+                "00000000-0000-0000-0000-000000008082");
+        publisher.publicEvents.clear();
+        when(games.canStart(any())).thenThrow(new IllegalStateException("content unavailable"));
+        var requestId = "00000000-0000-0000-0000-000000008083";
+
+        var changed = service.changeReady(GUEST, roomId, true, requestId);
+        var retried = service.changeReady(GUEST, roomId, true, requestId);
+
+        assertThat(changed.canStart()).isFalse();
+        assertThat(retried.participants()).filteredOn(participant -> participant.actorId().equals(GUEST.actorId().value()))
+                .singleElement().satisfies(participant -> assertThat(participant.ready()).isTrue());
+        assertThat(publisher.publicEvents).singleElement().satisfies(event -> {
+            assertThat(event.type()).isEqualTo("PLAYER_READY_CHANGED");
+            assertThat(((Map<?, ?>) event.payload()).get("canStart")).isEqualTo(false);
+        });
+    }
+
+    @Test
     void leavePublishesTheFreshStartEligibilityInItsPublicPayload() {
         var repository = new InMemoryActiveRoomRepository();
         var publisher = new RecordingPublisher();
