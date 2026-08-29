@@ -2852,3 +2852,15 @@ Minor 보강으로 `PLAYER_JOINED`, `PLAYER_READY_CHANGED`, `ROOM_SETTINGS_UPDAT
 
 - `backend`의 `.\gradlew.bat test --tests com.minigame.platform.room.application.RoomApplicationServiceTest --no-daemon --stacktrace`와 최소 `gradlew help` 모두 `java.io.IOException: Unable to establish loopback connection`에서 daemon 연결 전에 종료됐다. 따라서 Gradle 전체 백엔드 suite는 이번 보강 환경에서 재실행하지 못했다.
 - `docker version`은 client 정보를 출력했지만 `npipe:////./pipe/docker_engine`가 없어서 daemon에 연결하지 못했다. 이 때문에 PostgreSQL Testcontainers 실행, 패키지 이미지 빌드/Compose readiness, 실제 Playwright E2E는 재실행하지 않았으며 완료로 기록하지 않는다.
+
+## 최종 재검토 후 원자성 보강
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-144 | 2026-08-29 | 콘텐츠 기반 `canStart` 조회가 실패하면 방 변경을 되돌리거나 오류로 응답하지 않고 시작 가능 여부만 `false`로 닫아 이벤트와 REST 스냅샷을 제공 | `canStart`는 방 변경 결과에 붙는 파생 정보다. 참가·준비·설정 변경을 이미 반영한 뒤 조회 예외가 전파되면 요청자는 실패를 받지만 상태는 남고, 같은 요청 ID 재시도는 멱등 no-op가 되어 실시간 이벤트까지 잃을 수 있기 때문이다. | 구현 완료 |
+
+독립 재검토에서 `GameApplicationService.canStart`의 콘텐츠 조회 예외가 `RoomApplicationService`의 이미 수락된 변경 뒤에 전파될 수 있음을 확인했다. 공통 `canStartSafely` 경계를 추가해 조회 성공 시에는 기존과 동일한 콘텐츠 기반 값을 사용하고, 실패 시에는 경고 로그와 함께 `false`를 반환한다. 따라서 방 상태·멱등 기록·이벤트는 서로 어긋나지 않고, 클라이언트는 다음 정상 권위 스냅샷까지 게임 시작 버튼을 안전하게 비활성화한다.
+
+회귀 테스트는 콘텐츠 조회가 예외를 던져도 준비 상태 변경이 성공하고 `PLAYER_READY_CHANGED(canStart=false)`가 한 번 발행되며, 같은 요청 ID 재시도에서 참가자의 준비 상태가 유지되고 이벤트가 중복되지 않는지를 검증한다. `git diff --check`는 통과했다. Gradle 집중 테스트는 권한 확장 환경에서도 task 실행 전에 기존 `java.io.IOException: Unable to establish loopback connection`으로 종료되어, 이 신규 테스트의 Gradle 실행은 확인하지 못한 상태로 남긴다.
+
+후속 제한 리뷰는 이 원자성 수정에서 Critical/Important/Minor 문제를 찾지 않았고, 기존 9개 Important와 2개 Minor도 코드와 회귀 테스트에 모두 매핑된 것으로 판단했다. 다만 후속 리뷰는 전체 변경의 재감사가 아니라 신규 커밋 중심 검토였으므로, Gradle 전체 suite·PostgreSQL 통합·패키지 Playwright E2E 통과를 병합 전 최종 조건으로 유지한다.

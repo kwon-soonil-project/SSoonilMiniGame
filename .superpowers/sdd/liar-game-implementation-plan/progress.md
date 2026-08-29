@@ -78,3 +78,10 @@ Ruling: `DISCUSSION_END_PROPOSE` host authorization is enforced by Task 6 inside
 - Frontend: 26 suites and 106/106 tests passed; `vue-tsc --noEmit` plus Vite build passed (80 transformed modules).
 - Playwright static discovery: 3 files, 9 tests.
 - Blocked evidence remains explicit: Gradle focused test and `help` both stop at `java.io.IOException: Unable to establish loopback connection`; Docker daemon pipe is absent, so PostgreSQL Testcontainers and packaged Playwright E2E were not run.
+
+## Independent Re-review Follow-up — 2026-08-29
+
+- Independent re-review found one new atomicity risk: a content-backed `canStart` exception could escape after a room mutation was accepted, leaving committed state and idempotency without a delivered event.
+- Commit `8fe718c` adds a shared fail-closed eligibility boundary for REST snapshots and realtime event payloads plus an idempotent readiness regression test.
+- `git diff --check` passed. Focused Gradle execution was retried with elevated permissions but still stopped before task execution at `java.io.IOException: Unable to establish loopback connection`; the new test remains execution-pending rather than claimed green.
+- Fresh limited review of `8fe718c`: no Critical/Important/Minor findings; original 9 Important + 2 Minor mapped to code/tests. Merge readiness remains conditional on the blocked full Gradle/PostgreSQL/packaged E2E gates.

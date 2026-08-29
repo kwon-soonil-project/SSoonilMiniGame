@@ -57,3 +57,13 @@ The in-process backend runner used already cached dependencies and was removed a
 - Revote candidates exist only in `REVOTING`.
 - Liar ID, answer, round result, and final rankings are accepted/rendered only in their result phases.
 - Final-score entries are rebuilt from an explicit field allowlist, so extra nested role data is discarded.
+
+## Independent re-review follow-up
+
+While tracing the original findings in code, the independent re-review identified one additional atomicity risk. Room mutations were committed before the content-backed `canStart` value was derived. If that lookup threw, the caller received a failure although the mutation and idempotency record remained, and retrying could become a no-op without recovering the lost realtime event.
+
+Commit `8fe718c` routes REST snapshots and eligibility-changing event payloads through a fail-closed `canStartSafely` boundary. Successful lookups retain the authoritative content-aware value. Lookup failures are logged and return `false`, so accepted room state and its event remain consistent while the start control stays disabled. A regression test covers accepted readiness state, one `PLAYER_READY_CHANGED(canStart=false)` event, and idempotent retry without duplicate publication.
+
+`git diff --check` passed. The focused Gradle test was attempted both inside the sandbox and with elevated execution. The elevated attempt again failed before task execution with `java.io.IOException: Unable to establish loopback connection`; therefore this new regression test is not recorded as executed.
+
+A fresh limited review of commit `8fe718c` found no Critical, Important, or Minor issues. It judged all original nine Important and two Minor findings mapped to code and regression tests, while explicitly noting that this was not a new full-branch audit. Merge readiness therefore remains conditional on the blocked Gradle, PostgreSQL, and packaged Playwright verification.
