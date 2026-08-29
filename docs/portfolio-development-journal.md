@@ -2808,3 +2808,47 @@ git commit -m "test: verify four-player liar game journey"
 - Task 6 뒤: 실제 REST/STOMP 경계에서 시작, 행동, 재접속과 비밀 투영을 검증할 수 있다.
 - Task 7~8 뒤: 모바일·PC에서 실제 플레이 UI를 단위 테스트와 프로덕션 빌드로 검증할 수 있다.
 - Task 9 뒤: 운영과 동일한 컨테이너에서 네 명의 전체 게임 흐름이 자동 검증된다.
+
+# 2026-08-29 라이어 게임 최종 리뷰 보강
+
+최종 리뷰에서 확인한 아홉 개 Important 항목과 두 개 Minor 항목을 구현 커밋 `9ef7cd49b475cd61c90cd386c65c757a0943f555`에서 함께 보강했다. 기존 공개/개인 투영의 비밀 단계 경계는 유지하고, 서버가 공개하기로 결정한 정보만 단계별 allowlist를 통해 전달한다.
+
+## 최종 리뷰 ADR
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-139 | 2026-08-29 | 게임 행동 멱등 키를 `actorId + requestId`로 구성 | 공개적으로 관찰 가능한 같은 요청 ID를 서로 다른 참가자가 사용해도 한 참가자의 행동이 다른 참가자의 행동을 제거하지 않게 하기 위해 | 구현 완료 |
+| ADR-140 | 2026-08-29 | 지원하지 않는 게임은 외부 작업 전에 거절하고, 세션 저장 뒤 방 커밋 실패는 해당 세션만 `INTERRUPTED`로 보상 | 콘텐츠 조회·예약·영속화 부작용과 고아 `RUNNING` 세션을 막고 재시도를 가능하게 하기 위해 | 구현 완료 |
+| ADR-141 | 2026-08-29 | 힌트 제출/건너뜀 이력과 재투표 후보를 서버 권위 공개 상태로 제공하고, 라이어·제시어·최종 순위는 결과 단계에서만 공개 | 이탈 뒤 힌트 순서를 보존하고 클라이언트 추론을 제거하면서 역할 공개 전 비밀 유출을 막기 위해 | 구현 완료 |
+| ADR-142 | 2026-08-29 | 마지막 라운드 종료 시 최신 활성 명단을 세션 결과와 런타임 최종 순위에 함께 반영하고 관전자 변경 이벤트를 클라이언트 명단에 적용 | 최종 경계에서 승격된 참가자의 0점·닉네임·참여 라운드 수가 DB, 공개 결과, 대기방 UI에서 서로 달라지지 않게 하기 위해 | 구현 완료 |
+| ADR-143 | 2026-08-29 | REST와 실시간 방 이벤트의 `canStart`를 동일한 콘텐츠 가용성 검사로 계산하고, PostgreSQL 세션 통합 테스트는 매 테스트 전에 세션 행을 격리 | 준비 상태만으로 시작 가능하다고 잘못 표시하는 stale UI와 다른 테스트의 `RUNNING` 행 간섭을 막기 위해 | 구현 완료 |
+
+## 반영한 최종 리뷰 항목
+
+1. 요청 ID 중복 판정을 참가자별로 분리했다.
+2. 미지원 게임 시작은 콘텐츠 선택, 스케줄 등록, 세션 저장 전에 `GAME_TYPE_UNSUPPORTED`로 종료한다.
+3. `RUNNING` 세션 저장 뒤 방 시작 토큰이 바뀌면 예약을 취소하고 해당 세션만 중단하며, 외부 오류는 `GAME_START_STATE_CHANGED`로 정규화한다.
+4. 이미 제출한 이탈 참가자의 힌트와 공개 순서는 유지하고, 아직 오지 않은 이탈 참가자의 차례만 제거하며 현재 차례 이탈은 명시적인 건너뜀으로 전진한다.
+5. 라이어의 정답 추측 성공을 시민 승리 플래그가 아니라 라이어 역전 승리와 2점으로 모델링한다.
+6. 힌트 `SUBMITTED`/`SKIPPED` 상태와 1차 동률 재투표 후보를 서버 투영에 포함한다.
+7. 라운드 결과에서만 라이어와 제시어를 공개하고, 게임 결과에서는 공동 순위·닉네임·점수·참여 라운드 수를 allowlist로 제공한다.
+8. 최종 경계의 최신 참가자 명단을 영속 결과와 공개 최종 순위에 함께 포함하고, 실시간 관전자 승격을 프런트 참가자 수와 준비 UI에 반영한다.
+9. 토론 종료 제안과 최종 대기방 복귀 버튼을 현재 방장에게만 보이고, 재투표 후보와 라이어 역전 결과 문구를 E2E 계약에 맞췄다.
+
+Minor 보강으로 `PLAYER_JOINED`, `PLAYER_READY_CHANGED`, `ROOM_SETTINGS_UPDATED`, `HOST_TRANSFERRED`, `PLAYER_LEFT`의 `canStart`를 REST 스냅샷과 같은 `GameApplicationService.canStart`에서 계산했다. `GamePersistenceIntegrationTest`는 `@BeforeEach`에서 `game_participants` 다음 `game_sessions`를 삭제해 순서와 무관하게 공유 `RUNNING` 상태를 제거한다.
+
+## 검증 증거
+
+- 변경된 백엔드 production 7개 파일을 이전 성공 빌드 클래스와 캐시 의존성에 대해 `javac -encoding UTF-8`로 정적 컴파일: exit `0`.
+- 변경된 백엔드 test 7개 파일을 같은 방식으로 정적 컴파일: exit `0`; 기존 deprecated test API note만 출력.
+- Gradle daemon을 사용하지 않는 임시 in-process JUnit runner로 변경 범위 6개 단위 테스트 클래스 실행: 최초 **80개 중 79개 성공, 1개 실패**. 세션 저장 뒤 상태 변경 시 `RoomRuleViolation`이 누출되는 실패를 확인해 게임 경계 오류를 정규화했다.
+- 같은 in-process JUnit 검증 재실행: **7 containers, 80 tests, 80 successful, 0 failed**. 임시 runner 소스는 검증 뒤 제거했다.
+- `frontend`의 `npx.cmd vitest run --reporter=json`: **26 suites, 106 tests, 106 passed, 0 failed**. 기존 Node `localStorage` experimental warning만 출력.
+- `frontend`의 `npm.cmd run build`: `vue-tsc --noEmit` 및 Vite production build 성공, 80 modules transformed.
+- `e2e`의 `npm.cmd test -- --list`: **3 files, 9 tests** 해석 성공.
+- 구현 staging 전후 `git diff --check`: whitespace error 없음.
+
+## 확인하지 못한 항목
+
+- `backend`의 `.\gradlew.bat test --tests com.minigame.platform.room.application.RoomApplicationServiceTest --no-daemon --stacktrace`와 최소 `gradlew help` 모두 `java.io.IOException: Unable to establish loopback connection`에서 daemon 연결 전에 종료됐다. 따라서 Gradle 전체 백엔드 suite는 이번 보강 환경에서 재실행하지 못했다.
+- `docker version`은 client 정보를 출력했지만 `npipe:////./pipe/docker_engine`가 없어서 daemon에 연결하지 못했다. 이 때문에 PostgreSQL Testcontainers 실행, 패키지 이미지 빌드/Compose readiness, 실제 Playwright E2E는 재실행하지 않았으며 완료로 기록하지 않는다.

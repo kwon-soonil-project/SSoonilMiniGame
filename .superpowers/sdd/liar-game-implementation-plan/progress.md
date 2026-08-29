@@ -62,7 +62,19 @@ Ruling: `DISCUSSION_END_PROPOSE` host authorization is enforced by Task 6 inside
 - Task 3: complete (`1cc1566..6edf006`; fix round 1/5 addressed 2 test-coverage findings and exposed/fixed duplicate actor IDs; scoped re-review approved)
 - Task 4: complete (`6edf006..dcbe708`; fix round 1/5 preserved authoritative public hint order; scoped re-review approved)
 - Task 5: complete (`dcbe708..da0550a`; fix round 1/5 addressed 7 findings; scoped re-review approved)
-- Task 6: complete (`da0550a..48c5a49`; Fix Rounds 1-2 addressed normalized authorization, failure-safe and automatically retried expiry, schedule-before-persist start rollback, session-specific close interruption, publication-safe real close cleanup, immutable locked projections, return idempotency, two-phase start validation, null STOMP data, final spectator activation, and recent-content fallback/cap; 200 backend tests passed; delegated review skipped per explicit no-subagent constraint)
-- Task 7: pending
-- Task 8: pending
-- Task 9: pending
+- Task 6: complete (`da0550a..6c89456`; fix rounds 1-2 addressed normalized authorization, failure-safe and automatically retried expiry, schedule-before-persist start, session-specific close interruption, publication-safe real close cleanup, immutable locked projections, return idempotency, two-phase start validation, null STOMP data, final spectator activation, and recent-content fallback/cap; final scoped re-review approved; 200 backend tests passed)
+- Task 7: complete (`6c89456..e982162`; fix rounds 1-2 aligned canStart, lifecycle status, action union, sanitization and bounded sidecar buffering; final scoped re-review approved; 86 frontend tests and build passed)
+- Task 8: complete (`e982162..f6d4b63`; fix round 1 aligned all UI action envelopes with backend parsers and hardened vote/closed-room UI; final scoped re-review approved; 98 frontend tests and build passed)
+- Task 9: code/docs complete (`f6d4b63..168a031`; fix rounds 1-2 added virtual `all` semantics, causal E2E waits and corrected integration evidence; scoped review approved); packaged four-browser E2E and PostgreSQL integration execution remain pending because Docker service access and Gradle loopback are blocked on this host
+
+## Final Review Fix Round — 2026-08-29
+
+- Implementation commit: `9ef7cd49b475cd61c90cd386c65c757a0943f555` (`fix: address liar game final review findings`).
+- Resolved all 9 Important review findings: actor-scoped action idempotency; unsupported-start early rejection; post-persistence session compensation and stable state-change errors; departure-safe hint history; correct Liar comeback scoring; authoritative hint/revote projection; result-only secret reveal and final ranking; prospective final-roster persistence/promotion; host-only and authoritative frontend/E2E controls.
+- Resolved Minor A: realtime eligibility event payloads now use content-aware `GameApplicationService.canStart`, matching REST snapshots.
+- Resolved Minor B: `GamePersistenceIntegrationTest` clears participant/session rows before each test to isolate intentionally retained `RUNNING` sessions.
+- Static Java verification: changed production 7 files compiled with exit 0; changed test 7 files compiled with exit 0 (deprecated test API note only).
+- Runnable backend unit fallback: initial 79/80 exposed leaked post-persistence `RoomRuleViolation`; after boundary normalization, 7 containers and 80/80 changed-scope tests passed. Temporary runner removed.
+- Frontend: 26 suites and 106/106 tests passed; `vue-tsc --noEmit` plus Vite build passed (80 transformed modules).
+- Playwright static discovery: 3 files, 9 tests.
+- Blocked evidence remains explicit: Gradle focused test and `help` both stop at `java.io.IOException: Unable to establish loopback connection`; Docker daemon pipe is absent, so PostgreSQL Testcontainers and packaged Playwright E2E were not run.
