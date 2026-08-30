@@ -85,3 +85,11 @@ Ruling: `DISCUSSION_END_PROPOSE` host authorization is enforced by Task 6 inside
 - Commit `8fe718c` adds a shared fail-closed eligibility boundary for REST snapshots and realtime event payloads plus an idempotent readiness regression test.
 - `git diff --check` passed. Focused Gradle execution was retried with elevated permissions but still stopped before task execution at `java.io.IOException: Unable to establish loopback connection`; the new test remains execution-pending rather than claimed green.
 - Fresh limited review of `8fe718c`: no Critical/Important/Minor findings; original 9 Important + 2 Minor mapped to code/tests. Merge readiness remains conditional on the blocked full Gradle/PostgreSQL/packaged E2E gates.
+
+## Packaged Verification Closure — 2026-08-30
+
+- Restored Docker Desktop and ran Gradle in Linux to bypass the Windows-only Java NIO loopback failure without mounting the host Docker socket.
+- Packaged E2E found and drove RED→GREEN fixes for settings-command field allowlisting and waiting-room ready reset; stale host-ready and ambiguous hint locators were corrected.
+- Added optional `TEST_DB_*` integration-test configuration: external isolated PostgreSQL path verified, Testcontainers fallback retained for CI.
+- Fresh gates: backend full Gradle `BUILD SUCCESSFUL`; frontend 14 files/107 tests; production build; Compose PostgreSQL healthy + readiness 200; packaged Playwright 9/9.
+- Review fix: external DB execution now requires explicit destructive opt-in plus a `*_test` database; three safety tests and the guarded full Gradle suite passed.

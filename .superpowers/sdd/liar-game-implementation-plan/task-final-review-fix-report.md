@@ -67,3 +67,20 @@ Commit `8fe718c` routes REST snapshots and eligibility-changing event payloads t
 `git diff --check` passed. The focused Gradle test was attempted both inside the sandbox and with elevated execution. The elevated attempt again failed before task execution with `java.io.IOException: Unable to establish loopback connection`; therefore this new regression test is not recorded as executed.
 
 A fresh limited review of commit `8fe718c` found no Critical, Important, or Minor issues. It judged all original nine Important and two Minor findings mapped to code and regression tests, while explicitly noting that this was not a new full-branch audit. Merge readiness therefore remains conditional on the blocked Gradle, PostgreSQL, and packaged Playwright verification.
+
+## Packaged verification closure — 2026-08-30
+
+Docker Desktop was started as a user process and the remaining gates were executed without exposing the host Docker socket to a build container. Packaged E2E first revealed two real cross-layer defects: the settings component emitted snapshot-only nullable fields, causing STOMP deserialization failure, and the store did not clear ready flags when the authoritative game-null event returned the room to waiting. RED-focused tests were added before the allowlist and ready-reset fixes. Two stale/ambiguous Playwright locators were also aligned with the confirmed host UX and textbox role.
+
+Fresh final evidence:
+
+- backend full Gradle suite with external isolated PostgreSQL: `BUILD SUCCESSFUL`;
+- frontend: 14 files, 107/107 tests passed;
+- frontend production build: passed;
+- packaged image build and Compose startup: passed;
+- PostgreSQL 17 healthy, Flyway v1-v4, readiness HTTP 200;
+- Playwright against the packaged app: 9/9 passed, including the 47.9-second four-player Liar journey.
+
+The Windows-host Gradle client still cannot establish its NIO loopback channel. This no longer blocks source verification because the complete Gradle suite ran in Linux against real PostgreSQL. The new external-database test path is verified; the no-environment Testcontainers fallback remains for CI and should be reconfirmed by the GitHub Actions run.
+
+Review then identified that an incorrectly supplied external URL could expose a shared database to the integration suite's cleanup SQL. The external path now requires both `TEST_DB_ALLOW_DESTRUCTIVE=true` and a PostgreSQL database name ending in `_test`. Missing opt-in and non-test database names are rejected by focused tests; the dedicated-database case is accepted. The guarded full backend Gradle suite was rerun successfully.

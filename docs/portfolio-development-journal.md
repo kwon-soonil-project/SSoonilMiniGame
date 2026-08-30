@@ -2864,3 +2864,33 @@ Minor 보강으로 `PLAYER_JOINED`, `PLAYER_READY_CHANGED`, `ROOM_SETTINGS_UPDAT
 회귀 테스트는 콘텐츠 조회가 예외를 던져도 준비 상태 변경이 성공하고 `PLAYER_READY_CHANGED(canStart=false)`가 한 번 발행되며, 같은 요청 ID 재시도에서 참가자의 준비 상태가 유지되고 이벤트가 중복되지 않는지를 검증한다. `git diff --check`는 통과했다. Gradle 집중 테스트는 권한 확장 환경에서도 task 실행 전에 기존 `java.io.IOException: Unable to establish loopback connection`으로 종료되어, 이 신규 테스트의 Gradle 실행은 확인하지 못한 상태로 남긴다.
 
 후속 제한 리뷰는 이 원자성 수정에서 Critical/Important/Minor 문제를 찾지 않았고, 기존 9개 Important와 2개 Minor도 코드와 회귀 테스트에 모두 매핑된 것으로 판단했다. 다만 후속 리뷰는 전체 변경의 재감사가 아니라 신규 커밋 중심 검토였으므로, Gradle 전체 suite·PostgreSQL 통합·패키지 Playwright E2E 통과를 병합 전 최종 조건으로 유지한다.
+
+# 2026-08-30 패키지 E2E 및 PostgreSQL 검증 완료
+
+Windows 호스트의 Java NIO 루프백 오류는 JDK 17·21과 IPv4 강제에서도 동일하게 재현됐다. 프로젝트 코드나 Gradle 버전 문제가 아니라 호스트 실행 환경 문제로 분리하고, Docker Desktop의 Linux 컨테이너에서 Gradle을 실행해 검증 경로를 복구했다. Docker 소켓은 테스트 컨테이너에 전달하지 않았다.
+
+## 검증 과정에서 확정한 ADR
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-145 | 2026-08-30 | 설정 저장 명령은 전체 방 스냅샷을 펼치지 않고 `RoomSettings`의 여섯 필드만 명시적으로 투영 | `game: null` 같은 스냅샷 전용 값이 STOMP payload에 섞여 불변 Map 역직렬화를 실패시키고 설정 이벤트를 유실한 실제 E2E 결함을 막기 위해 | 구현·E2E 검증 완료 |
+| ADR-146 | 2026-08-30 | `GAME_STATE_CHANGED(game=null)`을 대기방 복귀의 권위 이벤트로 해석해 프론트 참가자 준비 상태도 모두 초기화 | 서버는 복귀 시 준비를 초기화하지만 클라이언트가 이전 값을 유지해 다음 게임에서 `준비 취소`를 표시하던 상태 불일치를 제거하기 위해 | 구현·E2E 검증 완료 |
+| ADR-147 | 2026-08-30 | PostgreSQL 테스트는 `TEST_DB_URL/USER/PASSWORD`가 있으면 외부 격리 DB를 사용하고, 없으면 Testcontainers PostgreSQL을 직접 시작 | 호스트 Docker 소켓을 빌드 컨테이너에 노출하지 않으면서 로컬·CI 양쪽의 실제 PostgreSQL 검증을 유지하기 위해 | 외부 DB 경로 검증 완료 · Testcontainers fallback은 CI 재확인 필요 |
+
+외부 DB 경로는 파괴적인 테스트 SQL을 실행하므로 `TEST_DB_ALLOW_DESTRUCTIVE=true`를 명시하고 DB 이름이 `_test`로 끝날 때만 활성화한다. 공유·운영 DB URL 또는 opt-in 누락을 거절하는 테스트 2개와 안전한 전용 DB 허용 테스트 1개를 RED→GREEN으로 추가했다.
+
+## RED → GREEN과 패키지 증거
+
+- `RoomSettingsPanel`이 전체 스냅샷의 `roomId`, `game: null`까지 emit하는 회귀 테스트를 먼저 RED로 확인한 뒤, 설정 allowlist 투영으로 GREEN 처리했다.
+- 대기방 복귀 이벤트 뒤 준비 상태가 남는 store 테스트를 RED로 확인한 뒤, 모든 참가자의 `ready=false` 반영으로 관련 36개 테스트를 GREEN 처리했다.
+- 방/채팅 E2E는 방장에게 준비 버튼이 없다는 확정 UX에 맞게 수정했고 집중 실행 **2/2 통과**했다.
+- 힌트 입력 locator는 영역·입력·버튼을 함께 잡던 label 검색 대신 `textbox(name=힌트, exact)`로 좁혔다.
+- 프론트 전체: **14 test files, 107/107 tests 통과**.
+- 프론트 프로덕션 빌드: `vue-tsc --noEmit` 및 Vite 성공, 80 modules transformed.
+- 패키지 빌드: 멀티스테이지 Docker 이미지 `minigame:local` 생성 성공, non-root 런타임 기동 성공.
+- PostgreSQL 17 Compose 컨테이너 healthy, Flyway v1~v4 검증/적용, `/actuator/health/readiness` HTTP **200**.
+- 실제 Playwright: 배포 계약, 공개/비공개 방·채팅, 4인 라이어 실패/성공 추측·재투표·복귀를 포함해 **9/9 통과**.
+- 백엔드 전체 Gradle suite: Linux JDK 21 컨테이너에서 별도 `minigame_test` PostgreSQL에 연결해 **BUILD SUCCESSFUL**.
+- DB 안전 가드 반영 후 동일 전체 Gradle suite를 명시적 opt-in과 함께 재실행해 다시 **BUILD SUCCESSFUL**.
+
+Windows에서 직접 실행하는 Gradle은 계속 `java.io.IOException: Unable to establish loopback connection`으로 실패하지만, 동일 소스의 Linux Gradle 전체 suite와 운영형 컨테이너/E2E가 통과했으므로 코드 검증 차단은 해소됐다. Docker Desktop은 빌드 중 한 차례 종료돼 사용자 프로세스로 재시작했으며 최종 전체 검증은 복구 후 새로 실행했다.
