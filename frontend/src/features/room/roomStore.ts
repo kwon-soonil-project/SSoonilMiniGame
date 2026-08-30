@@ -462,6 +462,7 @@ export const useRoomStore = defineStore('room', () => {
           room.game = null
           room.status = 'WAITING'
           room.canStart = false
+          room.participants.forEach(participant => { participant.ready = false })
           privateGameState = null
           privateGameSequence = event.sequence
           publicGameSequence = event.sequence

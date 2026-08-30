@@ -4,16 +4,14 @@ import com.minigame.platform.game.application.GameSessionPort;
 import com.minigame.platform.game.application.GameSessionNotRunningException;
 import com.minigame.platform.game.application.LiarContentPort;
 import com.minigame.platform.room.domain.GameType;
+import com.minigame.platform.test.PostgresTestDatabase;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -29,13 +27,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest(properties = "app.session.secret=test-key-that-is-at-least-32-bytes-long")
-@Testcontainers
 class GamePersistenceIntegrationTest {
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(
-            DockerImageName.parse("postgres:17-alpine")
-    );
+    @DynamicPropertySource
+    static void databaseProperties(DynamicPropertyRegistry registry) {
+        PostgresTestDatabase.register(registry);
+    }
 
     @Autowired
     private JdbcTemplate jdbc;

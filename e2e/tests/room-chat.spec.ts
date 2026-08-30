@@ -21,9 +21,8 @@ test('two guests discover a public room, ready up, chat, and recover after reloa
     await expect(guestPage.getByRole('status')).toContainText('실시간 연결됨')
 
     await expect(hostPage.getByRole('listitem').filter({ hasText: '수진' })).toBeVisible()
-    await hostPage.getByRole('button', { name: '준비하기' }).click()
     await guestPage.getByRole('button', { name: '준비하기' }).click()
-    await expect(hostPage.getByRole('listitem').filter({ hasText: '민수' })).toContainText('준비 완료')
+    await expect(hostPage.getByRole('listitem').filter({ hasText: '민수' })).toContainText('방장')
     await expect(hostPage.getByRole('listitem').filter({ hasText: '수진' })).toContainText('준비 완료')
 
     await guestPage.getByLabel('메시지 입력').fill('다들 준비됐어?')

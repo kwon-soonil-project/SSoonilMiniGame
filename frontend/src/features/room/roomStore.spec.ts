@@ -305,7 +305,11 @@ describe('roomStore', () => {
   })
 
   it('removes game state when the server returns the room to waiting', async () => {
-    const store = await joinRoom(realtimeFake())
+    const readySnapshot = {
+      ...snapshot,
+      participants: snapshot.participants.map(participant => ({ ...participant, ready: true })),
+    }
+    const store = await joinRoom(realtimeFake(), readySnapshot)
     await store.applyPublicEvent(event(2, 'GAME_STATE_CHANGED', { game: publicLiarState }))
     await store.applyPrivateEvent(event(2, 'GAME_PRIVATE_STATE_CHANGED', { game: liarPrivateState }))
 
@@ -313,6 +317,7 @@ describe('roomStore', () => {
 
     expect(store.snapshot?.game).toBeNull()
     expect(store.snapshot?.status).toBe('WAITING')
+    expect(store.snapshot?.participants.every(participant => !participant.ready)).toBe(true)
   })
 
   it('marks the room as playing when a public game snapshot arrives', async () => {

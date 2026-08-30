@@ -7,15 +7,26 @@ const props = withDefaults(defineProps<{ settings: RoomSettings; editable: boole
 })
 const emit = defineEmits<{ save: [settings: RoomSettings] }>()
 
-const form = reactive<RoomSettings>({ ...props.settings })
-watch(() => props.settings, value => Object.assign(form, value), { deep: true })
+function settingsValue(value: RoomSettings): RoomSettings {
+  return {
+    gameType: value.gameType,
+    maxParticipants: value.maxParticipants,
+    rounds: value.rounds,
+    actionSeconds: value.actionSeconds,
+    discussionSeconds: value.discussionSeconds,
+    categoryPack: value.categoryPack,
+  }
+}
+
+const form = reactive<RoomSettings>(settingsValue(props.settings))
+watch(() => props.settings, value => Object.assign(form, settingsValue(value)), { deep: true })
 
 const games: Array<{ value: GameType; label: string }> = [
   { value: 'LIAR', label: '라이어 게임' },
 ]
 
 function save(): void {
-  emit('save', { ...form })
+  emit('save', settingsValue(form))
 }
 </script>
 

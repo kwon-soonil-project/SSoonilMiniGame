@@ -198,8 +198,9 @@ export async function submitHintsInDisplayedOrder(
     const nickname = nicknames.find(candidate => turnText.includes(candidate))
     if (!nickname) throw new Error('Displayed hint turn did not match a player nickname')
     const activePage = pages[nicknames.indexOf(nickname)]
-    await expect(activePage.getByLabel('힌트')).toBeEnabled({ timeout: E2E_EXPECT_TIMEOUT })
-    await activePage.getByLabel('힌트').fill(hint)
+    const hintInput = activePage.getByRole('textbox', { name: '힌트', exact: true })
+    await expect(hintInput).toBeEnabled({ timeout: E2E_EXPECT_TIMEOUT })
+    await hintInput.fill(hint)
     await activePage.getByRole('button', { name: '힌트 제출' }).click()
     await expect.poll(async () => {
       const discussing = await pages[0].getByRole('heading', { name: '토론 시간' }).isVisible()
