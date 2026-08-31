@@ -2894,3 +2894,17 @@ Windows 호스트의 Java NIO 루프백 오류는 JDK 17·21과 IPv4 강제에�
 - DB 안전 가드 반영 후 동일 전체 Gradle suite를 명시적 opt-in과 함께 재실행해 다시 **BUILD SUCCESSFUL**.
 
 Windows에서 직접 실행하는 Gradle은 계속 `java.io.IOException: Unable to establish loopback connection`으로 실패하지만, 동일 소스의 Linux Gradle 전체 suite와 운영형 컨테이너/E2E가 통과했으므로 코드 검증 차단은 해소됐다. Docker Desktop은 빌드 중 한 차례 종료돼 사용자 프로세스로 재시작했으며 최종 전체 검증은 복구 후 새로 실행했다.
+
+# 2026-08-31 PR CI와 운영 배포 준비
+
+사용자가 PR 병합과 운영 배포를 명시적으로 승인했다. 구현 브랜치를 푸시하고 [PR #5](https://github.com/kwon-soonil-project/SSoonilMiniGame/pull/5)를 `main` 대상으로 생성했다. 보호 규칙을 우회하지 않고 CI 통과 후 병합하며, `main` push의 자동 프리뷰 배포와 수동 workflow dispatch의 운영 승격을 사용한다. 운영은 같은 실행에서 프리뷰로 검증한 이미지 digest와 일치해야 한다. 현재 GitHub `production` 환경에는 별도 required reviewer 규칙이 없으므로 수동 workflow 실행이 승인 경계다.
+
+첫 [PR CI 실행](https://github.com/kwon-soonil-project/SSoonilMiniGame/actions/runs/33401727515)에서 백엔드 전체 Gradle 테스트와 기본 Testcontainers PostgreSQL 경로, 프론트 14개 테스트 파일 및 빌드가 통과했다. 이에 따라 ADR-147의 CI fallback 미검증 상태를 해소했다.
+
+패키지 E2E는 8개 성공, 4인 라이어 시나리오 1개 실패였고 자동 재시도에서도 같은 실패가 발생했다. 다운로드한 Playwright trace에서 마지막 힌트가 서버에 수락되고 화면이 `토론 시간`으로 바뀐 것을 확인했다. 원인은 테스트가 `isVisible()`로 토론 여부를 읽은 직후 단계가 바뀌면서, 후속 `innerText()`가 이미 사라진 힌트 차례 요소를 기다리는 TOCTOU 경쟁 조건이었다. 앱의 게임 전환 실패가 아니므로 게임 코드는 변경하지 않았다.
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-148 | 2026-08-31 | E2E 힌트 전진 확인은 힌트 차례와 토론 제목의 union locator에 단일 재시도 assertion을 적용 | 두 개의 비동기 DOM 조회 사이에 단계가 바뀌어 정상 전환을 실패로 판정하는 경쟁 조건 제거. 힌트 순서와 모든 플레이어의 토론 진입 검증은 유지 | 로컬 3회 연속 통과 · PR CI 재검증 예정 |
+
+기존 패키지 앱에서 `npm test -- tests/liar-game.spec.ts --repeat-each=3 --workers=1`을 실행해 **3/3 통과(2.5분)**를 확인했다. 각 반복은 네 브라우저의 역할 복구, 오답/정답 추측, 재투표 및 대기방 복귀를 모두 포함한다. 앱 코드는 변경하지 않았으며 최종 병합 조건은 수정 SHA의 GitHub 전체 CI 성공으로 유지한다.

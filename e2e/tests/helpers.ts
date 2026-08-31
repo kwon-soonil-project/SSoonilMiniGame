@@ -202,11 +202,11 @@ export async function submitHintsInDisplayedOrder(
     await expect(hintInput).toBeEnabled({ timeout: E2E_EXPECT_TIMEOUT })
     await hintInput.fill(hint)
     await activePage.getByRole('button', { name: '힌트 제출' }).click()
-    await expect.poll(async () => {
-      const discussing = await pages[0].getByRole('heading', { name: '토론 시간' }).isVisible()
-      if (discussing) return 'discussion'
-      return (await pages[0].getByText(/^현재 힌트 차례:/).innerText()).trim()
-    }, { timeout: E2E_EXPECT_TIMEOUT }).not.toBe(turnText.trim())
+    // Resolve both phases in one locator so a phase transition cannot leave
+    // a separate innerText() call waiting for the removed hint-turn element.
+    const turnOrDiscussion = pages[0].getByText(/^현재 힌트 차례:/)
+      .or(pages[0].getByRole('heading', { name: '토론 시간' }))
+    await expect(turnOrDiscussion).not.toHaveText(turnText.trim(), { timeout: E2E_EXPECT_TIMEOUT })
   }
   await expectAll(pages, page => page.getByRole('heading', { name: '토론 시간' }))
 }
