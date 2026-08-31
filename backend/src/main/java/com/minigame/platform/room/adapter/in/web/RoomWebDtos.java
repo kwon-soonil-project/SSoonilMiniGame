@@ -44,6 +44,7 @@ public final class RoomWebDtos {
             Visibility visibility,
             GameType gameType,
             RoomStatus status,
+            boolean canStart,
             boolean passwordProtected,
             int participantCount,
             int maxParticipants,
@@ -54,8 +55,12 @@ public final class RoomWebDtos {
             int discussionSeconds,
             String categoryPack,
             List<ParticipantResponse> participants,
-            List<ChatMessageResponse> chats
+            List<ChatMessageResponse> chats,
+            GameSnapshotResponse game
     ) {
+    }
+
+    public record GameSnapshotResponse(Object publicState, Object privateState) {
     }
 
     public record ChatMessageResponse(
@@ -89,6 +94,7 @@ public final class RoomWebDtos {
                 view.visibility(),
                 view.gameType(),
                 view.status(),
+                view.canStart(),
                 view.passwordProtected(),
                 view.participantCount(),
                 view.maxParticipants(),
@@ -105,7 +111,11 @@ public final class RoomWebDtos {
                         message.nickname(),
                         message.body(),
                         message.sentAt()
-                )).toList()
+                )).toList(),
+                view.game() == null ? null : new GameSnapshotResponse(
+                        view.game().publicState(),
+                        view.game().privateState()
+                )
         );
     }
 

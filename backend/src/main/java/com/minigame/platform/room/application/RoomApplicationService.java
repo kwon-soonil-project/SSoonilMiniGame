@@ -1,6 +1,7 @@
 package com.minigame.platform.room.application;
 
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
 import com.minigame.platform.room.domain.GameType;
 import com.minigame.platform.room.domain.Participant;
 import com.minigame.platform.room.domain.Room;
@@ -15,9 +16,12 @@ import com.minigame.platform.shared.realtime.EventEnvelope;
 import com.minigame.platform.shared.realtime.RoomEventPublisher;
 import com.minigame.platform.shared.abuse.AbuseRateLimiter;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.util.ArrayDeque;
@@ -33,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class RoomApplicationService {
+    private static final Logger log = LoggerFactory.getLogger(RoomApplicationService.class);
     private static final int DEFAULT_ROUNDS = 3;
     private static final int DEFAULT_ACTION_SECONDS = 30;
     private static final int DEFAULT_DISCUSSION_SECONDS = 90;
@@ -45,6 +50,7 @@ public class RoomApplicationService {
     private final Clock clock;
     private final ChatPolicy chatPolicy;
     private final AbuseRateLimiter abuseLimiter;
+    private final GameApplicationService games;
     private final Map<RoomId, String> passwordHashes = new ConcurrentHashMap<>();
     private final Map<RoomId, Object> lobbyPublicationLocks = new ConcurrentHashMap<>();
     private final Map<RoomId, Long> lobbyPublishedSequences = new ConcurrentHashMap<>();
@@ -58,7 +64,8 @@ public class RoomApplicationService {
             RoomEventPublisher eventPublisher,
             Clock clock,
             ChatPolicy chatPolicy,
-            AbuseRateLimiter abuseLimiter
+            AbuseRateLimiter abuseLimiter,
+            ObjectProvider<GameApplicationService> games
     ) {
         this(
                 repository,
@@ -66,7 +73,8 @@ public class RoomApplicationService {
                 eventPublisher,
                 clock,
                 chatPolicy,
-                abuseLimiter
+                abuseLimiter,
+                games.getIfAvailable()
         );
     }
 
@@ -108,12 +116,25 @@ public class RoomApplicationService {
             ChatPolicy chatPolicy,
             AbuseRateLimiter abuseLimiter
     ) {
+        this(repository, passwordEncoder, eventPublisher, clock, chatPolicy, abuseLimiter, null);
+    }
+
+    public RoomApplicationService(
+            ActiveRoomRepository repository,
+            PasswordEncoder passwordEncoder,
+            RoomEventPublisher eventPublisher,
+            Clock clock,
+            ChatPolicy chatPolicy,
+            AbuseRateLimiter abuseLimiter,
+            GameApplicationService games
+    ) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.passwordEncoder = Objects.requireNonNull(passwordEncoder, "passwordEncoder");
         this.eventPublisher = Objects.requireNonNull(eventPublisher, "eventPublisher");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.chatPolicy = Objects.requireNonNull(chatPolicy, "chatPolicy");
         this.abuseLimiter = Objects.requireNonNull(abuseLimiter, "abuseLimiter");
+        this.games = games;
     }
 
     public RoomSnapshotView create(
@@ -181,19 +202,21 @@ public class RoomApplicationService {
         var initialSnapshot = room.snapshot();
         var normalizedPassword = normalizePassword(password);
         if (normalizedPassword != null) {
+            room.markPasswordProtected();
             var encodedPassword = passwordEncoder.encode(normalizedPassword);
             passwordHashes.put(initialSnapshot.id(), encodedPassword);
         }
         try {
             repository.save(room);
         } catch (RuntimeException exception) {
+            room.rollbackPasswordProtection();
             repository.remove(initialSnapshot.id());
             passwordHashes.remove(initialSnapshot.id());
             throw exception;
         }
         var publishedSnapshot = repository.findById(initialSnapshot.id())
                 .orElseThrow(() -> violation("ROOM_NOT_FOUND"));
-        var view = snapshotView(publishedSnapshot);
+        var view = snapshotView(publishedSnapshot, actor.actorId());
         if (publishedSnapshot.sequence() == 0L) {
             publishLobbyUpsert(publishedSnapshot, actor, requestId);
         }
@@ -263,13 +286,13 @@ public class RoomApplicationService {
                 abuseLimiter.passwordSucceeded(actor.actorId(), current.id(), clientFingerprint);
             }
             var events = room.join(actor.actorId(), actor.nickname(), false, requestId);
-            publishRoomEvents(current.id(), actor, requestId, events);
+            publishRoomEvents(room.snapshot(), actor, requestId, events);
             if (!events.isEmpty()) {
                 publishLobbyUpsert(room.snapshot(), actor, requestId);
             }
             return events;
         });
-        return snapshotView(result.snapshot());
+        return snapshotView(result.snapshot(), actor.actorId());
     }
 
     public void leaveJoinedRooms(ActorPrincipal actor) {
@@ -293,26 +316,38 @@ public class RoomApplicationService {
 
     public RoomSnapshotView snapshot(ActorPrincipal actor, RoomId roomId) {
         Objects.requireNonNull(actor, "actor");
-        var snapshot = find(roomId);
-        var participant = snapshot.participants().stream()
-                .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
-        if (!participant) {
-            throw violation("ROOM_PARTICIPANT_NOT_FOUND");
-        }
-        return snapshotView(snapshot);
+        return repository.withRoomValue(roomId, room -> {
+            var snapshot = room.snapshot();
+            var participant = snapshot.participants().stream()
+                    .anyMatch(candidate -> candidate.actorId().equals(actor.actorId()));
+            if (!participant) {
+                throw violation("ROOM_PARTICIPANT_NOT_FOUND");
+            }
+            return snapshotView(snapshot, actor.actorId());
+        }).value();
     }
 
     public void leave(ActorPrincipal actor, RoomId roomId, String requestId) {
         Objects.requireNonNull(actor, "actor");
         var result = repository.withRoom(roomId, room -> {
+            var leave = room.prepareLeave(actor.actorId(), requestId);
+            if (leave.isEmpty()) {
+                return room.leave(actor.actorId(), requestId);
+            }
+            if (games != null) {
+                games.participantLeft(room, actor.actorId(), clock.instant());
+                if (leave.orElseThrow()) {
+                    games.roomClosed(room, clock.instant());
+                }
+            }
             var events = room.leave(actor.actorId(), requestId);
-            publishRoomEvents(roomId, actor, requestId, events);
+            var snapshot = room.snapshot();
+            safePublish(() -> publishRoomEvents(snapshot, actor, requestId, events));
             if (!events.isEmpty()) {
-                var snapshot = room.snapshot();
                 if (snapshot.status() == RoomStatus.CLOSED) {
-                    publishLobbyRemove(snapshot, actor, requestId);
+                    safePublish(() -> publishLobbyRemove(snapshot, actor, requestId));
                 } else {
-                    publishLobbyUpsert(snapshot, actor, requestId);
+                    safePublish(() -> publishLobbyUpsert(snapshot, actor, requestId));
                 }
             }
             return events;
@@ -336,10 +371,10 @@ public class RoomApplicationService {
         Objects.requireNonNull(actor, "actor");
         var result = repository.withRoom(roomId, room -> {
             var events = room.changeReady(actor.actorId(), ready, requestId);
-            publishRoomEvents(roomId, actor, requestId, events);
+            publishRoomEvents(room.snapshot(), actor, requestId, events);
             return events;
         });
-        return snapshotView(result.snapshot());
+        return snapshotView(result.snapshot(), actor.actorId());
     }
 
     public RoomSnapshotView updateSettings(
@@ -351,13 +386,13 @@ public class RoomApplicationService {
         Objects.requireNonNull(actor, "actor");
         var result = repository.withRoom(roomId, room -> {
             var events = room.updateSettings(actor.actorId(), settings, requestId);
-            publishRoomEvents(roomId, actor, requestId, events);
+            publishRoomEvents(room.snapshot(), actor, requestId, events);
             if (!events.isEmpty()) {
                 publishLobbyUpsert(room.snapshot(), actor, requestId);
             }
             return events;
         });
-        return snapshotView(result.snapshot());
+        return snapshotView(result.snapshot(), actor.actorId());
     }
 
     public long publishChat(
@@ -422,8 +457,9 @@ public class RoomApplicationService {
         }
     }
 
-    private RoomSnapshotView snapshotView(Room.Snapshot room) {
+    private RoomSnapshotView snapshotView(Room.Snapshot room, com.minigame.platform.auth.domain.ActorId viewer) {
         var participants = room.participants().stream().map(this::participantView).toList();
+        var game = games == null ? null : games.snapshot(room, viewer).orElse(null);
         return new RoomSnapshotView(
                 room.id().value().toString(),
                 room.code().value(),
@@ -431,7 +467,8 @@ public class RoomApplicationService {
                 room.visibility(),
                 room.settings().gameType(),
                 room.status(),
-                passwordHashes.containsKey(room.id()),
+                canStartSafely(room),
+                room.passwordProtected(),
                 activeParticipantCount(room),
                 room.settings().maxParticipants(),
                 room.hostId().value(),
@@ -441,7 +478,8 @@ public class RoomApplicationService {
                 room.settings().discussionSeconds(),
                 room.settings().categoryPack(),
                 participants,
-                chatPolicy.history(room.id())
+                chatPolicy.history(room.id()),
+                game
         );
     }
 
@@ -457,7 +495,7 @@ public class RoomApplicationService {
                 room.title(),
                 room.settings().gameType(),
                 room.status(),
-                passwordHashes.containsKey(room.id()),
+                room.passwordProtected(),
                 activeParticipantCount(room),
                 room.settings().maxParticipants(),
                 hostNickname,
@@ -479,24 +517,41 @@ public class RoomApplicationService {
     }
 
     private void publishRoomEvents(
-            RoomId roomId,
+            Room.Snapshot room,
             ActorPrincipal actor,
             String requestId,
             List<RoomEvent> events
     ) {
+        if (events.isEmpty()) {
+            return;
+        }
+        var canStart = canStartSafely(room);
         for (var event : events) {
             if (event instanceof RoomEvent.ChatAccepted) {
                 continue;
             }
             eventPublisher.publishPublic(EventEnvelope.create(
                     requestId,
-                    roomId,
+                    room.id(),
                     actor,
                     eventType(event),
                     event.sequence(),
                     clock,
-                    eventPayload(event)
+                    eventPayload(event, canStart)
             ));
+        }
+    }
+
+    private boolean canStartSafely(Room.Snapshot room) {
+        if (games == null) {
+            return room.participantsReadyToStart();
+        }
+        try {
+            return games.canStart(room);
+        } catch (RuntimeException exception) {
+            log.warn("Game start eligibility lookup failed; disabling start until the next authoritative snapshot",
+                    exception);
+            return false;
         }
     }
 
@@ -554,6 +609,14 @@ public class RoomApplicationService {
         }
     }
 
+    private void safePublish(Runnable publication) {
+        try {
+            publication.run();
+        } catch (RuntimeException exception) {
+            log.warn("Best-effort room leave publication failed; snapshots remain authoritative", exception);
+        }
+    }
+
     private static String eventType(RoomEvent event) {
         return switch (event) {
             case RoomEvent.ParticipantJoined ignored -> "PLAYER_JOINED";
@@ -563,20 +626,24 @@ public class RoomApplicationService {
             case RoomEvent.ParticipantLeft ignored -> "PLAYER_LEFT";
             case RoomEvent.RoomClosed ignored -> "ROOM_CLOSED";
             case RoomEvent.ChatAccepted ignored -> "CHAT_MESSAGE";
+            case RoomEvent.GameStateChanged ignored -> "GAME_STATE_CHANGED";
+            case RoomEvent.PlayerSpectatorChanged ignored -> "PLAYER_SPECTATOR_CHANGED";
         };
     }
 
-    private static Object eventPayload(RoomEvent event) {
+    private static Object eventPayload(RoomEvent event, boolean canStart) {
         return switch (event) {
             case RoomEvent.ParticipantJoined joined -> Map.of(
                     "actorId", joined.participant().actorId().value(),
                     "nickname", joined.participant().nickname(),
                     "ready", joined.participant().ready(),
-                    "spectator", joined.participant().spectator()
+                    "spectator", joined.participant().spectator(),
+                    "canStart", canStart
             );
             case RoomEvent.ReadyChanged changed -> Map.of(
                     "actorId", changed.actorId().value(),
-                    "ready", changed.ready()
+                    "ready", changed.ready(),
+                    "canStart", canStart
             );
             case RoomEvent.SettingsUpdated updated -> Map.of(
                     "gameType", updated.settings().gameType(),
@@ -584,17 +651,25 @@ public class RoomApplicationService {
                     "rounds", updated.settings().rounds(),
                     "actionSeconds", updated.settings().actionSeconds(),
                     "discussionSeconds", updated.settings().discussionSeconds(),
-                    "categoryPack", updated.settings().categoryPack()
+                    "categoryPack", updated.settings().categoryPack(),
+                    "canStart", canStart
             );
             case RoomEvent.HostTransferred transferred -> Map.of(
                     "previousHostId", transferred.previousHostId().value(),
-                    "newHostId", transferred.newHostId().value()
+                    "newHostId", transferred.newHostId().value(),
+                    "canStart", canStart
             );
             case RoomEvent.ParticipantLeft left -> Map.of(
-                    "actorId", left.actorId().value()
+                    "actorId", left.actorId().value(),
+                    "canStart", canStart
             );
             case RoomEvent.RoomClosed ignored -> Map.of();
             case RoomEvent.ChatAccepted ignored -> Map.of();
+            case RoomEvent.GameStateChanged ignored -> Map.of();
+            case RoomEvent.PlayerSpectatorChanged changed -> Map.of(
+                    "actorId", changed.actorId().value(),
+                    "spectator", changed.spectator()
+            );
         };
     }
 
@@ -624,6 +699,7 @@ public class RoomApplicationService {
             Visibility visibility,
             GameType gameType,
             RoomStatus status,
+            boolean canStart,
             boolean passwordProtected,
             int participantCount,
             int maxParticipants,
@@ -634,7 +710,8 @@ public class RoomApplicationService {
             int discussionSeconds,
             String categoryPack,
             List<ParticipantView> participants,
-            List<ChatPolicy.ChatMessage> chats
+            List<ChatPolicy.ChatMessage> chats,
+            GameApplicationService.GameSnapshotView game
     ) {
     }
 

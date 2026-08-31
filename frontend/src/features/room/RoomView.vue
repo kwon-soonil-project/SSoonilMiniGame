@@ -2,6 +2,8 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { restoreFocus, trapDialogFocus } from '../../shared/ui/dialogFocus'
 import { useAuthStore } from '../auth/authStore'
+import GameShell from '../games/GameShell.vue'
+import type { LiarAction } from '../games/gameTypes'
 import ParticipantList from './ParticipantList.vue'
 import RoomChat, { type RoomInputSubmission } from './RoomChat.vue'
 import RoomSettingsPanel from './RoomSettingsPanel.vue'
@@ -18,6 +20,8 @@ const code = computed(() => props.code || window.location.pathname.split('/').fi
 const isHost = computed(() => room.snapshot?.hostId === auth.actor?.actorId)
 const me = computed(() => room.snapshot?.participants.find(participant => participant.actorId === auth.actor?.actorId))
 const canCommand = computed(() => room.connection === 'connected')
+const isPlaying = computed(() => room.snapshot?.status === 'PLAYING' && room.snapshot.game !== null)
+const isWaiting = computed(() => room.snapshot?.status === 'WAITING')
 const roomTransitionFailed = computed(() => room.connection === 'failed' && room.snapshot?.code !== code.value)
 const gameLabel = computed(() => ({ LIAR: '라이어 게임', DRAWING: '그림 퀴즈', CHOSUNG: '초성 퀴즈', MAJORITY: '다수결 예측' }[room.snapshot?.gameType ?? 'LIAR']))
 
@@ -38,6 +42,10 @@ function submitPassword(): void {
 function handleInput(submission: RoomInputSubmission): void {
   if (submission.mode === 'ANSWER') room.sendAnswer(submission.body)
   else room.sendChat(submission.body)
+}
+
+function handleGameAction(payload: { action: LiarAction; data: Record<string, unknown> }): void {
+  room.sendGameAction(payload.action, payload.data)
 }
 
 function leaveRoom(): void {
@@ -76,9 +84,9 @@ function handleMobileChatKeydown(event: KeyboardEvent): void {
     <main v-if="room.snapshot" class="room-main">
       <section class="hero" aria-labelledby="room-title">
         <div>
-          <p class="eyebrow">WAITING ROOM · {{ gameLabel }}</p>
+          <p class="eyebrow">{{ isPlaying ? 'NOW PLAYING' : isWaiting ? 'WAITING ROOM' : 'ROOM CLOSED' }} · {{ gameLabel }}</p>
           <h1 id="room-title">{{ room.snapshot.title }}</h1>
-          <p>친구들이 모이면 준비 상태를 확인하고 게임을 시작하세요.</p>
+          <p>{{ isPlaying ? '현재 라운드와 남은 시간을 확인해 주세요.' : isWaiting ? '친구들이 모이면 준비 상태를 확인하고 게임을 시작하세요.' : '이 방은 종료되었습니다.' }}</p>
         </div>
         <div class="connection" :class="room.connection" role="status" aria-live="polite">
           <span aria-hidden="true">●</span>
@@ -93,18 +101,37 @@ function handleMobileChatKeydown(event: KeyboardEvent): void {
       </p>
       <p v-if="room.commandError" class="notice error" role="alert">{{ room.commandError }}</p>
 
-      <section class="game-focus" aria-labelledby="current-game-title">
+      <GameShell
+        v-if="isPlaying && room.snapshot.game"
+        :public-state="room.snapshot.game.publicState"
+        :private-state="room.snapshot.game.privateState"
+        :participants="room.snapshot.participants"
+        :actor-id="auth.actor?.actorId ?? ''"
+        :is-host="isHost"
+        :connected="canCommand"
+        @action="handleGameAction"
+      >
+        <template #sidebar>
+          <ParticipantList :participants="room.snapshot.participants" :host-id="room.snapshot.hostId" :scores="room.snapshot.game.publicState.scores" />
+          <RoomChat class="desktop-chat" :messages="room.chats" :disabled="!canCommand" @submit="handleInput" />
+        </template>
+      </GameShell>
+
+      <section v-else-if="isWaiting" class="game-focus" aria-labelledby="current-game-title">
         <div><p class="eyebrow">NEXT GAME</p><h2 id="current-game-title">{{ gameLabel }}</h2><p>{{ room.snapshot.rounds }}라운드 · 행동 {{ room.snapshot.actionSeconds }}초 · 토론 {{ room.snapshot.discussionSeconds }}초</p></div>
-        <button data-action="ready" type="button" :disabled="!canCommand || me?.spectator" @click="room.sendReady(!me?.ready)">
+        <button v-if="isHost" data-action="start-game" type="button" :disabled="!canCommand || !room.snapshot.canStart" @click="room.startGame">게임 시작</button>
+        <button v-else data-action="ready" type="button" :disabled="!canCommand || me?.spectator" @click="room.sendReady(!me?.ready)">
           {{ me?.ready ? '준비 취소' : '준비하기' }}
         </button>
       </section>
 
-      <div class="room-grid">
+      <div v-if="isWaiting" class="room-grid">
         <ParticipantList :participants="room.snapshot.participants" :host-id="room.snapshot.hostId" />
         <RoomSettingsPanel :settings="room.snapshot" :editable="isHost && canCommand" :read-only-label="isHost ? '연결 복구 후 변경 가능' : '방장만 변경'" @save="room.updateSettings" />
         <RoomChat class="desktop-chat" :messages="room.chats" :disabled="!canCommand" @submit="handleInput" />
       </div>
+      <RoomSettingsPanel v-else-if="isPlaying" class="playing-settings" :settings="room.snapshot" :editable="false" read-only-label="게임 중에는 설정을 변경할 수 없어요" />
+      <section v-else class="room-closed" role="status">이 방은 종료되었습니다.</section>
     </main>
 
     <main v-else class="entry-state">

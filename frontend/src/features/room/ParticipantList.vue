@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RoomParticipant } from './roomStore'
 
-defineProps<{ participants: RoomParticipant[]; hostId: string }>()
+defineProps<{ participants: RoomParticipant[]; hostId: string; scores?: Record<string, number> }>()
 </script>
 
 <template>
@@ -19,7 +19,7 @@ defineProps<{ participants: RoomParticipant[]; hostId: string }>()
           <small v-else-if="participant.spectator">관전 중</small>
         </span>
         <span class="ready" :class="{ active: participant.ready }">
-          {{ participant.ready ? '준비 완료' : '준비 전' }}
+          {{ scores ? `${scores[participant.actorId] ?? 0}점` : participant.ready ? '준비 완료' : '준비 전' }}
         </span>
       </li>
     </ul>

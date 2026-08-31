@@ -2,12 +2,14 @@ package com.minigame.platform.room.application;
 
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.domain.GameType;
 import com.minigame.platform.room.domain.Room;
 import com.minigame.platform.room.domain.RoomCode;
 import com.minigame.platform.room.domain.RoomEvent;
 import com.minigame.platform.room.domain.RoomId;
+import com.minigame.platform.room.domain.RoomFixture;
 import com.minigame.platform.room.domain.RoomRuleViolation;
 import com.minigame.platform.room.domain.Visibility;
 import com.minigame.platform.shared.realtime.EventEnvelope;
@@ -19,15 +21,21 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class RoomApplicationServiceTest {
     private static final ActorPrincipal HOST = ActorPrincipal.guest(new ActorId("atomic-host"), "원자감자");
@@ -186,6 +194,201 @@ class RoomApplicationServiceTest {
         assertThat(repository.findAll()).isEmpty();
     }
 
+    @Test
+    void snapshotExposesStartEligibilityAfterAllNonHostParticipantsReady() {
+        var repository = new InMemoryActiveRoomRepository();
+        var service = new RoomApplicationService(repository, new TestPasswordEncoder());
+        var created = service.create(HOST, "시작 조건 방", Visibility.PUBLIC, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var guests = List.of(
+                ActorPrincipal.guest(new ActorId("ready-guest-1"), "참가자1"),
+                ActorPrincipal.guest(new ActorId("ready-guest-2"), "참가자2"),
+                ActorPrincipal.guest(new ActorId("ready-guest-3"), "참가자3")
+        );
+
+        for (int index = 0; index < guests.size(); index++) {
+            service.join(guests.get(index), new RoomCode(created.code()), null,
+                    "00000000-0000-0000-0000-00000000802" + index);
+        }
+        for (int index = 0; index < guests.size(); index++) {
+            service.changeReady(guests.get(index), roomId, true,
+                    "00000000-0000-0000-0000-00000000803" + index);
+        }
+
+        assertThat(service.snapshot(HOST, roomId).canStart()).isTrue();
+    }
+
+    @Test
+    void realtime_eligibility_events_use_content_aware_can_start_like_the_rest_snapshot() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var games = mock(GameApplicationService.class);
+        when(games.canStart(any())).thenReturn(false);
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                publisher,
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+        var created = service.create(HOST, "콘텐츠 없는 방", Visibility.PUBLIC, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var guests = List.of(
+                ActorPrincipal.guest(new ActorId("content-guest-1"), "참가자1"),
+                ActorPrincipal.guest(new ActorId("content-guest-2"), "참가자2"),
+                ActorPrincipal.guest(new ActorId("content-guest-3"), "참가자3")
+        );
+        for (int index = 0; index < guests.size(); index++) {
+            service.join(guests.get(index), new RoomCode(created.code()), null,
+                    "00000000-0000-0000-0000-00000000806" + index);
+        }
+        service.updateSettings(HOST, roomId, new com.minigame.platform.room.domain.RoomSettings(
+                GameType.LIAR, 10, 3, 30, 90, "content-empty"
+        ), "00000000-0000-0000-0000-000000008080");
+        for (int index = 0; index < guests.size(); index++) {
+            service.changeReady(guests.get(index), roomId, true,
+                    "00000000-0000-0000-0000-00000000807" + index);
+        }
+        service.leave(HOST, roomId, "00000000-0000-0000-0000-000000008081");
+
+        assertThat(service.snapshot(guests.getFirst(), roomId).canStart()).isFalse();
+        assertThat(publisher.publicEvents).extracting(EventEnvelope::type)
+                .contains("PLAYER_JOINED", "PLAYER_READY_CHANGED", "ROOM_SETTINGS_UPDATED", "HOST_TRANSFERRED", "PLAYER_LEFT");
+        assertThat(publisher.publicEvents)
+                .filteredOn(event -> List.of(
+                        "PLAYER_JOINED", "PLAYER_READY_CHANGED", "ROOM_SETTINGS_UPDATED", "HOST_TRANSFERRED", "PLAYER_LEFT"
+                ).contains(event.type()))
+                .allSatisfy(event -> assertThat(((Map<?, ?>) event.payload()).get("canStart")).isEqualTo(false));
+    }
+
+    @Test
+    void eligibility_lookup_failure_does_not_lose_an_already_accepted_room_change_or_event() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var games = mock(GameApplicationService.class);
+        when(games.canStart(any())).thenReturn(false);
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                publisher,
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+        var created = service.create(HOST, "조회 실패 방", Visibility.PRIVATE, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        service.join(GUEST, new RoomCode(created.code()), null,
+                "00000000-0000-0000-0000-000000008082");
+        publisher.publicEvents.clear();
+        when(games.canStart(any())).thenThrow(new IllegalStateException("content unavailable"));
+        var requestId = "00000000-0000-0000-0000-000000008083";
+
+        var changed = service.changeReady(GUEST, roomId, true, requestId);
+        var retried = service.changeReady(GUEST, roomId, true, requestId);
+
+        assertThat(changed.canStart()).isFalse();
+        assertThat(retried.participants()).filteredOn(participant -> participant.actorId().equals(GUEST.actorId().value()))
+                .singleElement().satisfies(participant -> assertThat(participant.ready()).isTrue());
+        assertThat(publisher.publicEvents).singleElement().satisfies(event -> {
+            assertThat(event.type()).isEqualTo("PLAYER_READY_CHANGED");
+            assertThat(((Map<?, ?>) event.payload()).get("canStart")).isEqualTo(false);
+        });
+    }
+
+    @Test
+    void leavePublishesTheFreshStartEligibilityInItsPublicPayload() {
+        var repository = new InMemoryActiveRoomRepository();
+        var publisher = new RecordingPublisher();
+        var service = new RoomApplicationService(repository, new TestPasswordEncoder(), publisher, Clock.systemUTC());
+        var created = service.create(HOST, "퇴장 준비 상태 방", Visibility.PUBLIC, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var guest = ActorPrincipal.guest(new ActorId("leaving-guest"), "나가는 참가자");
+        service.join(guest, new RoomCode(created.code()), null, "00000000-0000-0000-0000-000000008041");
+        publisher.publicEvents.clear();
+
+        service.leave(guest, roomId, "00000000-0000-0000-0000-000000008042");
+
+        assertThat(publisher.publicEvents).singleElement().satisfies(event -> {
+            assertThat(event.type()).isEqualTo("PLAYER_LEFT");
+            assertThat(event.payload()).isEqualTo(Map.of("actorId", "leaving-guest", "canStart", false));
+        });
+    }
+
+    @Test
+    void closing_interrupt_failure_does_not_consume_leave_and_retry_can_close_room() {
+        var repository = new InMemoryActiveRoomRepository();
+        var games = mock(GameApplicationService.class);
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                new RecordingPublisher(),
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+        var created = service.create(HOST, "종료 재시도 방", Visibility.PRIVATE, null, GameType.LIAR);
+        var roomId = new RoomId(java.util.UUID.fromString(created.roomId()));
+        var requestId = "00000000-0000-0000-0000-000000008051";
+        doThrow(new IllegalStateException("interrupt failed"))
+                .doNothing()
+                .when(games).roomClosed(any(Room.class), any());
+
+        assertThatThrownBy(() -> service.leave(HOST, roomId, requestId))
+                .isInstanceOf(IllegalStateException.class).hasMessage("interrupt failed");
+        assertThat(repository.findById(roomId)).isPresent().get().satisfies(snapshot -> {
+            assertThat(snapshot.status()).isEqualTo(com.minigame.platform.room.domain.RoomStatus.WAITING);
+            assertThat(snapshot.participants()).hasSize(1);
+        });
+
+        service.leave(HOST, roomId, requestId);
+        assertThat(repository.findById(roomId)).isEmpty();
+    }
+
+    @Test
+    void requester_game_projection_and_can_start_are_built_while_room_lock_is_held() {
+        var repository = new LockAwareRepository();
+        repository.save(RoomFixture.emptyRoom());
+        var games = mock(GameApplicationService.class);
+        when(games.snapshot(any(), any())).thenAnswer(invocation -> {
+            assertThat(repository.insideLock).isTrue();
+            return Optional.empty();
+        });
+        when(games.canStart(any())).thenAnswer(invocation -> {
+            assertThat(repository.insideLock).isTrue();
+            return false;
+        });
+        var service = new RoomApplicationService(
+                repository,
+                new TestPasswordEncoder(),
+                new RecordingPublisher(),
+                Clock.systemUTC(),
+                new ChatPolicy(Clock.systemUTC()),
+                new com.minigame.platform.shared.abuse.AbuseRateLimiter(
+                        Clock.systemUTC(), Integer.MAX_VALUE, Duration.ofMinutes(1),
+                        Integer.MAX_VALUE, Duration.ofMinutes(1)
+                ),
+                games
+        );
+
+        service.snapshot(
+                ActorPrincipal.guest(RoomFixture.HOST, "방장"),
+                RoomFixture.ROOM_ID
+        );
+    }
+
     private static class DelegatingRepository implements ActiveRoomRepository {
         final InMemoryActiveRoomRepository delegate = new InMemoryActiveRoomRepository();
 
@@ -222,6 +425,22 @@ class RoomApplicationServiceTest {
         @Override
         public void remove(RoomId roomId) {
             delegate.remove(roomId);
+        }
+    }
+
+    private static final class LockAwareRepository extends DelegatingRepository {
+        private final AtomicBoolean insideLock = new AtomicBoolean();
+
+        @Override
+        public RoomMutationResult withRoom(RoomId roomId, Function<Room, List<RoomEvent>> command) {
+            return super.withRoom(roomId, room -> {
+                insideLock.set(true);
+                try {
+                    return command.apply(room);
+                } finally {
+                    insideLock.set(false);
+                }
+            });
         }
     }
 

@@ -43,8 +43,8 @@
 - 현재 활성 참가자 수보다 최대 인원을 낮추는 변경은 차단한다. 새 게임의 최대 인원보다 참가자가 많을 때도 해당 게임으로 변경할 수 없다.
 - 게임 진행 중에는 게임 종류와 라운드·시간·카테고리 설정을 변경할 수 없다. 방 잠금, 채팅 관리, 강퇴와 재입장 차단 같은 운영 권한은 계속 사용할 수 있다.
 - 방장 위임이 완료되면 기존 방장의 관리 권한은 즉시 회수한다. 방 코드는 방이 종료될 때까지 유지한다.
-- 게임은 선택한 게임의 최소 인원을 충족하고 관전자를 제외한 모든 활성 참가자가 준비했을 때만 시작할 수 있다.
-- 방장이 게임 종류나 게임 설정을 변경하면 모든 참가자의 준비 상태를 해제한다. 참가자는 변경된 내용을 확인한 뒤 다시 준비한다.
+- 게임은 선택한 게임의 최소 인원을 충족하고 관전자와 방장을 제외한 모든 활성 참가자가 준비했을 때 방장이 시작할 수 있다.
+- 방장이 게임 종류나 게임 설정을 변경하면 일반 참가자의 준비 상태를 해제한다. 참가자는 변경된 내용을 확인한 뒤 다시 준비한다.
 - 시작 요청의 인원, 준비 상태, 방장 권한은 서버가 최종 검증한다.
 - 마지막 사용자의 30초 재접속 유예가 끝나면 방을 즉시 종료하고 공개 로비에서 제거한다.
 - 종료된 방의 실시간 상태와 비밀번호는 폐기한다. 완료된 게임 결과와 신고·제재에 필요한 최소 문맥만 별도 스냅샷으로 보존한다.
@@ -458,8 +458,8 @@ AWS로 이전할 경우 동일한 애플리케이션 이미지를 ECS/Fargate에
 | ADR-065 | 2026-08-23 | 로비 목록을 REST 스냅샷과 STOMP 증분 이벤트로 동기화 | 최초 로딩의 단순성과 실시간 변경 반영을 함께 만족하기 위해 | 확정 |
 | ADR-066 | 2026-08-23 | 대기방부터 게임 종료까지 방 단위 채팅을 유지 | 게임 전 준비 조율과 게임 후 대화를 하나의 방 경험으로 연결하기 위해 | 확정 |
 | ADR-067 | 2026-08-23 | 모바일 대기방에 고정 채팅 버튼과 읽지 않은 메시지 수 표시 | 하단 시트로 숨긴 채팅의 발견 가능성과 새 메시지 인지를 높이기 위해 | 확정 |
-| ADR-068 | 2026-08-23 | 최소 인원과 모든 활성 참가자의 준비 완료를 게임 시작 조건으로 사용 | 참가자가 원치 않는 상태에서 게임이 시작되는 것을 막고 설정 확인을 보장하기 위해 | 확정 |
-| ADR-069 | 2026-08-23 | 게임 또는 설정 변경 시 전원의 준비 상태 해제 | 준비 이후 규칙이 바뀐 채 게임이 시작되는 상황을 방지하기 위해 | 확정 |
+| ADR-068 | 2026-08-23 | 최소 인원과 모든 활성 참가자의 준비 완료를 게임 시작 조건으로 사용 | 참가자가 원치 않는 상태에서 게임이 시작되는 것을 막고 설정 확인을 보장하기 위해 | ADR-128로 대체 |
+| ADR-069 | 2026-08-23 | 게임 또는 설정 변경 시 일반 참가자의 준비 상태 해제 | 준비 이후 규칙이 바뀐 채 게임이 시작되는 상황을 방지하기 위해 | 확정 |
 | ADR-070 | 2026-08-23 | 게임 시작 조건을 서버에서 최종 검증 | 조작되거나 지연된 클라이언트 상태로 잘못 시작되는 것을 막기 위해 | 확정 |
 | ADR-071 | 2026-08-23 | 마지막 사용자의 재접속 유예 종료 시 빈 방을 즉시 종료 | 사용되지 않는 방이 로비와 서버 메모리에 남는 것을 방지하기 위해 | 확정 |
 | ADR-072 | 2026-08-23 | 방 종료 시 실시간 상태·비밀번호를 폐기하고 결과·신고 문맥만 보존 | 불필요한 데이터 보관을 줄이면서 전적과 공개 운영에 필요한 근거를 유지하기 위해 | 확정 |
@@ -1762,3 +1762,1149 @@ git commit -m "test: verify common platform vertical slice"
 - 모바일과 데스크톱 대기방 레이아웃이 동작한다.
 - 백엔드·프론트 단위 테스트, PostgreSQL 통합 테스트, 컨테이너 빌드와 Playwright E2E가 통과한다.
 - 다음 게임 계획은 이 공통 방·명령·이벤트 계약 위에 게임 레지스트리와 `GameEngine`을 추가한다.
+
+---
+
+# 2026-08-24 공통 게임 엔진과 라이어 게임 설계
+
+## 1. 목표와 첫 수직 슬라이스
+
+첫 게임 개발 단위는 공통 게임 엔진과 라이어 게임 전체 흐름이다. 게스트 네 명이 방에서 게임을 시작해 역할 확인, 순차 힌트, 토론, 투표, 필요 시 재투표와 라이어의 역전 추측, 라운드 결과, 최종 순위, 대기방 복귀까지 완료할 수 있어야 한다. 이 과정에서 검증한 생명주기, 타이머, 점수, 재접속, 공개·비공개 상태 경계를 이후 그림 퀴즈, 초성 퀴즈, 다수결 예측이 재사용한다.
+
+범용 워크플로 DSL은 만들지 않는다. 공통 엔진은 방과 게임의 생명주기만 담당하고 각 게임 모듈이 규칙과 상태를 소유하는 상태 머신 구조를 사용한다. 라이어 게임 전용 서비스에 모든 기능을 넣었다가 나중에 분리하는 방식도 사용하지 않는다.
+
+## 2. 책임과 모듈 경계
+
+### 공통 게임 엔진
+
+- 게임 모듈 등록과 `GameType` 조회
+- 시작 조건과 참가자 명단 고정
+- 현재 게임, 라운드, 공통 점수, 단계 마감시각 관리
+- 게임 모듈로 명령과 시간 만료 전달
+- 라운드 반복, 최종 종료, 대기방 복귀
+- 공개 상태와 요청자 전용 상태를 결합한 재접속 스냅샷 생성
+- `game_sessions`, `game_participants` 시작·완료·중단 기록
+
+### 라이어 게임 모듈
+
+- 카테고리와 제시어 선택
+- 라이어 셔플 백과 라운드별 역할 배정
+- 무작위 힌트 순서와 한 문장 힌트 검증
+- 토론 조기 종료 제안과 과반수 계산
+- 비공개 투표, 한 번의 재투표, 라이어 역전 추측
+- 라운드 판정과 점수 계산
+- 공개 투영과 사용자별 역할·제시어 투영
+
+도메인 상태 머신은 Spring, STOMP, JPA, 스케줄러 구현 타입에 의존하지 않는다. 응용 서비스가 인증 사용자, 현재 시각, 난수, 콘텐츠, 명령을 도메인 입력으로 변환한다.
+
+## 3. 게임 시작 조건과 대기방 UX
+
+방장은 준비 상태를 갖지 않으며 준비 버튼 대신 게임 시작 버튼을 본다. 일반 활성 참가자만 준비 버튼을 사용한다. 서버가 다음 조건을 모두 만족할 때 `canStart=true`를 스냅샷과 이벤트에 포함한다.
+
+- 방 상태가 `WAITING`이다.
+- 라이어 게임 활성 참가자가 방장을 포함해 4~10명이다.
+- 방장을 제외한 모든 활성 참가자가 준비했다.
+- 선택한 콘텐츠 범위에 사용 가능한 제시어가 있다.
+- 관전자는 시작 인원과 준비 조건에서 제외한다.
+
+30초 재접속 유예 중인 활성 참가자는 기존 준비 상태와 자리를 유지한다. 설정 변경 또는 새로운 활성 참가자 입장은 일반 참가자의 준비를 모두 해제하고 `canStart`를 다시 계산한다. 프론트 버튼이 활성화되어 있어도 `GAME_START` 처리 시 서버가 조건을 다시 검증한다. 이 결정은 방장까지 준비해야 했던 ADR-068을 대체한다.
+
+## 4. 공통 상태와 라이어 상태 머신
+
+`Room`은 0개 또는 1개의 `GameRuntime`을 가진다. `GameRuntime`은 세션 ID, 게임 종류, 참가자 명단, 현재 라운드, 누적 점수, 사용한 콘텐츠, 라이어 셔플 백과 게임별 상태를 보유한다. 같은 방의 사용자 명령과 시간 만료는 기존 방별 잠금 안에서 순서대로 처리한다.
+
+라이어 게임의 한 라운드는 다음 순서로 진행한다.
+
+```text
+ROLE_REVEAL(5초)
+  → HINTING(참가자별 actionSeconds)
+  → DISCUSSING(discussionSeconds 또는 과반 조기 종료)
+  → VOTING(actionSeconds)
+  → REVOTING(actionSeconds, 필요한 경우 한 번만)
+  → LIAR_GUESSING(actionSeconds, 라이어가 지목된 경우)
+  → ROUND_RESULT(8초)
+  → 다음 라운드 또는 GAME_RESULT
+```
+
+`actionSeconds`는 힌트, 투표, 재투표, 역전 추측에 공통 적용하며 15~45초다. 토론은 60~180초다. 모든 필수 제출이 끝나면 해당 단계는 마감시각을 기다리지 않고 즉시 진행한다. 마지막 라운드 이후 최종 순위를 계속 표시하며 방장의 `RETURN_TO_WAITING` 또는 60초 만료로 모든 사용자가 대기방에 복귀한다. 복귀 시 준비 상태는 해제하고 게임 설정은 유지한다.
+
+## 5. 라이어 게임 규칙 상세
+
+### 역할과 콘텐츠
+
+- 라이어는 셔플 백으로 정한다. 모든 활성 참가자가 한 번씩 라이어가 되기 전에는 같은 사용자가 다시 라이어가 되지 않는다.
+- 시민은 카테고리와 제시어를 받고 라이어는 카테고리만 받는다.
+- 같은 게임 세션에서 제시어를 중복하지 않는다.
+- 방 메모리에 최근 사용 제시어 20개를 보관해 다음 게임에서도 가능한 한 피한다. 선택 범위가 부족하면 세션 내 중복 금지를 우선하고 최근 기록 회피만 완화한다.
+- 라운드 사이에 승격된 참가자는 즉시 활성 명단과 0점 공동 순위에 들어가지만, 진행 중인 라이어 셔플 백에는 끼워 넣지 않고 다음 재충전부터 후보가 된다. 이탈자는 즉시 백에서 제거한다.
+
+### 힌트
+
+- 활성 참가자를 라운드마다 무작위로 섞고 한 명씩 힌트를 제출한다.
+- 현재 차례의 참가자만 제출할 수 있고 제출 후 수정할 수 없다.
+- 빈 입력, 여러 문장, 정규화한 제시어 또는 별칭의 직접 입력을 거절한다.
+- 시간 안에 제출하지 않으면 `SKIPPED`로 표시하고 다음 차례로 이동한다.
+
+### 토론 조기 종료
+
+- 방장만 조기 종료를 제안할 수 있다.
+- 제안 자체를 방장의 찬성 한 표로 계산한다.
+- 활성 참가자 과반수가 찬성하면 즉시 투표로 이동한다. 과반수는 `floor(activePlayers / 2) + 1`이다.
+- 방장 여부는 참가자 배열 순서로 추정하지 않고, 방별 잠금 안에서 현재 `Room.hostId`와 명령 actor를 비교한다. 게임 중 방장 위임도 다음 명령부터 즉시 반영한다.
+- 토론이 시간 만료로 종료되거나 단계가 바뀌면 제안과 찬성 상태를 폐기한다.
+
+### 투표와 재투표
+
+- 활성 참가자는 자신을 제외한 한 명에게 한 번만 비공개로 투표한다.
+- 공개 상태에는 제출 여부만 표시하고 대상은 결과 집계 전까지 공개하지 않는다.
+- 시간 안에 제출하지 않으면 기권한다. 제출된 표만 집계하며 전체 기권이면 라이어가 생존한다.
+- 최다 득표자가 한 명이고 라이어면 라이어가 지목된다. 시민이면 라이어가 생존한다.
+- 최다 득표가 동률이면 동률 후보만 대상으로 한 번 재투표한다.
+- 재투표도 동률이거나 전체 기권이면 라이어가 생존한다.
+
+### 역전 추측과 점수
+
+- 라이어가 지목된 경우에만 라이어에게 제시어 역전 추측 입력을 연다.
+- 공백, 대소문자와 일반 문장부호를 정규화하고 등록된 별칭을 허용한다.
+- 라이어가 생존하면 라이어가 3점을 얻는다.
+- 지목된 라이어가 제시어를 맞히면 라이어가 2점을 얻고 시민은 점수를 얻지 못한다.
+- 라이어가 추측에 실패하거나 시간 안에 제출하지 않으면 해당 라운드의 시민이 각 1점을 얻는다.
+
+## 6. 이탈과 재접속
+
+게임 중 연결이 끊긴 참가자는 기존과 같이 30초 동안 활성 자리를 유지하고 같은 세션으로 복귀하면 역할, 제시어, 점수, 제출 상태와 현재 단계를 복원한다. 서버 타이머는 연결 여부와 관계없이 계속 진행한다.
+
+유예가 만료되면 다음 규칙을 적용한다.
+
+- 라이어가 이탈하거나 활성 인원이 4명 미만이면 현재 라운드를 무효 처리한다. 아무에게도 점수를 주지 않고 결과 화면 뒤 다음 라운드로 진행한다.
+- 시민이 이탈해도 활성 인원이 4명 이상이면 남은 참가자로 라운드를 계속한다.
+- 이탈자의 남은 힌트 차례와 투표는 자동으로 건너뛴다.
+- 다음 라운드부터 남은 활성 참가자로 힌트 순서와 역할을 다시 구성한다.
+
+## 7. 타이머와 동시성
+
+각 시간 제한 단계는 서버의 절대 `deadline`과 증가하는 단계 버전을 저장한다. 클라이언트는 `deadline`으로 남은 시간을 표시하지만 0초에 임의로 상태를 전환하지 않는다. 예약 작업은 서버를 깨우는 수단일 뿐이며 실행 시 방별 잠금 안에서 세션 ID, 라운드, 단계 버전과 현재 시각을 다시 확인한다. 이미 제출로 조기 전환됐거나 이전 라운드에서 늦게 실행된 콜백은 아무 작업도 하지 않는다.
+
+행동 처리도 현재 시각이 마감시각과 같거나 지난 경우 거절해 예약 콜백과 사용자 명령의 잠금 획득 순서에 따라 판정이 달라지지 않게 한다. `ROUND_RESULT` 이후 진행은 저장된 과거 명단으로 자동 전환하지 않고, 관전자 승격까지 반영한 최신 활성 명단을 동기화한 경우에만 수행한다. 최신 명단이 4명 미만이면 다음 라운드를 시작하지 않고 최종 결과로 종료한다.
+
+모든 사용자 명령은 UUID `requestId`로 멱등 처리한다. 상태 변경, 이벤트 순번 증가, 다음 마감 예약 지시를 하나의 도메인 결과로 만든 뒤 응용 서비스가 이벤트를 전송한다.
+
+## 8. 명령과 이벤트 계약
+
+공통 명령은 기존 방 STOMP 목적지를 유지한다.
+
+```json
+{
+  "requestId": "uuid",
+  "type": "GAME_ACTION",
+  "payload": {
+    "action": "HINT_SUBMIT",
+    "data": {}
+  }
+}
+```
+
+방장은 별도 `GAME_START` 명령으로 게임을 시작한다. 라이어 모듈은 `HINT_SUBMIT`, `DISCUSSION_END_PROPOSE`, `DISCUSSION_END_VOTE`, `VOTE_SUBMIT`, `REVOTE_SUBMIT`, `LIAR_GUESS_SUBMIT`, `RETURN_TO_WAITING` 행동과 각 payload를 검증한다.
+
+공개 이벤트는 `/topic/rooms/{roomId}`로 단계, 라운드, 마감시각, 점수, 힌트, 제출 여부와 공개 결과만 보낸다. 역할, 시민 제시어와 요청자 전용 오류는 `/user/queue/rooms/{roomId}`로 보낸다. 한 상태 변경에서 발생하는 공개 이벤트와 개인 보조 이벤트는 같은 방 이벤트 순번을 공유해 공개 순번에 구멍을 만들지 않는다.
+
+안정적인 오류 코드는 `GAME_NOT_RUNNING`, `GAME_ACTION_NOT_ALLOWED`, `GAME_NOT_YOUR_TURN`, `GAME_ALREADY_SUBMITTED`, `GAME_TARGET_INVALID`, `GAME_HINT_INVALID`, `GAME_START_CONDITION_NOT_MET`, `GAME_CONTENT_UNAVAILABLE`을 기본으로 사용한다. 입력 원문, 제시어, 역할과 투표 대상은 일반 로그에 기록하지 않는다.
+
+## 9. 스냅샷과 비밀 정보
+
+기존 방 스냅샷에 `game.publicState`와 인증된 요청자 전용 `game.privateState`를 추가한다. 공개 상태에는 게임 종류, 라운드, 단계, 마감시각, 점수, 공개 힌트, 제출자 목록과 공개 결과가 들어간다. 개인 상태에는 본인 역할, 시민 제시어, 본인의 제출 여부만 들어간다. 다른 참가자의 역할, 제시어, 투표 대상은 직렬화 모델에 포함하지 않는다.
+
+재접속 시 REST 스냅샷을 기준으로 상태를 복구한 뒤 기존 이벤트 순번 이후의 STOMP 이벤트를 적용한다. 개인 실시간 이벤트를 놓쳐도 요청자 전용 스냅샷으로 현재 역할과 제시어를 다시 얻을 수 있어야 한다.
+
+## 10. 콘텐츠와 영속화
+
+Flyway 마이그레이션으로 `content_packs`, `content_items`, `game_sessions`, `game_participants`를 추가한다. 초기 라이어 콘텐츠는 다음 8개 카테고리에 각각 50개씩 총 400개를 제공한다.
+
+1. 음식
+2. 동물
+3. 직업
+4. 장소
+5. 생활용품
+6. 스포츠
+7. 교통수단
+8. 취미·활동
+
+방 설정은 전체 카테고리 또는 한 카테고리를 선택할 수 있다. 초기 데이터에는 유행어와 특정 작품의 고유 캐릭터를 넣지 않는다. 콘텐츠 항목은 정답 본문, 정규화 검색값, 선택적 별칭, 활성 여부를 가진다. 1차에는 관리자 편집 UI를 만들지 않고 마이그레이션으로 버전을 관리한다.
+
+진행 중 `GameRuntime`, 역할, 투표, 힌트와 타이머는 서버 메모리에 둔다. 게임 시작 전에 사용할 콘텐츠를 조회하고 `RUNNING` 세션 저장에 성공한 경우에만 방을 `PLAYING`으로 전환한다. 정상 종료 시 참가자별 점수와 공동 순위를 저장하고 세션을 `COMPLETED`로 바꾼다. 프로세스 재시작 시 남은 `RUNNING` 세션은 기존 ADR-103에 따라 `INTERRUPTED`로 정리한다.
+
+## 11. Vue 화면 구조
+
+대기방과 게임은 같은 `/rooms/:code` 경로를 사용한다. 방 상태가 `PLAYING`이면 공통 `GameShell` 안에 라이어 게임 화면을 렌더링한다.
+
+- 상단에는 게임, 현재 라운드, 단계, 서버 마감시각 기준 타이머와 연결 상태를 표시한다.
+- 중앙에는 역할 공개, 힌트, 토론, 투표, 역전 추측, 결과 중 현재 단계 컴포넌트를 표시한다.
+- PC에서는 참가자·점수·채팅을 우측 패널에, 모바일에서는 하단 드로어에 배치한다.
+- 역할, 제출과 연결 상태는 색상뿐 아니라 텍스트와 아이콘으로 표현한다.
+- 연결 복구 중에는 입력을 잠그고 스냅샷 복구 후 현재 단계 화면을 다시 구성한다.
+- 채팅 기록과 WebSocket 연결은 대기방, 게임, 대기방 복귀 사이에서 유지한다.
+
+## 12. 오류 처리
+
+- 잘못된 단계, 권한, 차례, 중복 제출은 상태를 바꾸지 않고 요청자에게만 안정적인 오류 코드를 보낸다.
+- 콘텐츠 조회나 `RUNNING` 세션 생성 실패 시 게임을 시작하지 않고 모든 준비 상태와 대기방을 유지한다.
+- 예약 작업 실패는 오류 로그와 지표를 남기며 동일 단계의 현재 마감시각을 기준으로 재예약한다.
+- 공개 이벤트 발행 실패나 이벤트 누락은 재접속 스냅샷으로 회복한다.
+- 프로세스 재시작은 진행 중 게임 복구를 시도하지 않고 중단 상태를 명확히 안내한다.
+
+## 13. 테스트와 완료 기준
+
+### 자동화 테스트
+
+- JUnit 순수 도메인 테스트는 가짜 시계와 고정 난수로 역할 배정, 모든 단계 전환, 조기 종료, 타임아웃, 동률·재투표, 역전 성공·실패, 점수와 중도 이탈을 검증한다.
+- Testcontainers PostgreSQL 통합 테스트는 콘텐츠 400개, 카테고리 필터, 중복 회피와 세션의 `RUNNING → COMPLETED/INTERRUPTED` 전환을 검증한다.
+- WebSocket 어댑터 테스트는 멱등 요청, 권한·단계 오류, 이벤트 순서와 공개 payload의 비밀 정보 유출 여부를 검증한다.
+- Vitest는 방장 시작 버튼 활성 조건, 역할별 화면, 단계 컴포넌트, 마감시각 타이머와 재접속 복원을 검증한다.
+- Playwright는 네 개의 독립 브라우저 컨텍스트로 일반 투표, 동률 재투표, 역전 성공·실패, 한 명 재접속과 대기방 복귀를 검증한다.
+- 기존 인증, 로비, 방, 채팅, 컨테이너와 배포 계약 테스트도 모두 통과해야 한다.
+
+### 완료 조건
+
+운영과 동일한 컨테이너에서 게스트 네 명이 최소 한 게임을 끝낼 수 있어야 한다. 역할·제시어·비공개 투표가 다른 사용자나 공개 이벤트에 노출되지 않아야 하며 점수, 타임아웃, 재접속, 최종 결과와 대기방 복귀가 서버 상태와 일치해야 한다.
+
+## 14. 이번 범위에서 제외
+
+- 그림 퀴즈, 초성 퀴즈, 다수결 예측의 실제 규칙 구현
+- 콘텐츠 관리자 편집 화면과 사용자 제작 콘텐츠
+- 진행 중 게임 상태의 PostgreSQL 복구
+- Cloud Run 다중 인스턴스와 공유 게임 상태
+- 음성·영상 채팅
+
+## 15. 추가 의사결정 기록
+
+| ID | 날짜 | 결정 | 이유 | 상태 |
+|---|---|---|---|---|
+| ADR-117 | 2026-08-24 | 공통 상태 머신과 독립 게임 모듈 계약 사용 | 네 게임이 생명주기를 재사용하면서 규칙과 비밀 상태를 독립적으로 발전시키기 위해 | 구현 완료 |
+| ADR-118 | 2026-08-24 | 첫 게임 수직 슬라이스를 공통 엔진과 라이어 게임으로 구성 | 타이머, 비밀 역할, 투표, 점수를 한 번에 검증하기 위해 | 구현 완료 |
+| ADR-119 | 2026-08-24 | 초기 라이어 콘텐츠를 8개 카테고리, 각 50개씩 PostgreSQL에 시드 | 반복을 줄이고 이후 관리자 편집 기능으로 확장 가능한 저장 경계를 만들기 위해 | 구현 완료 |
+| ADR-120 | 2026-08-24 | 토론 조기 종료는 방장 제안과 활성 참가자 과반수 동의로 결정 | 방장 단독 종료의 불공정을 피하면서 늘어지는 토론을 줄이기 위해 | 구현 완료 |
+| ADR-121 | 2026-08-24 | 투표 시간 초과는 기권, 전체 기권은 라이어 생존으로 처리 | 게임 정지를 방지하고 명시적인 기본 판정을 만들기 위해 | 구현 완료 |
+| ADR-122 | 2026-08-24 | 라이어 이탈 또는 활성 인원 4명 미만이면 현재 라운드를 무효화 | 역할 게임의 성립 조건과 점수 공정성을 지키기 위해 | 구현 완료 |
+| ADR-123 | 2026-08-24 | 세션 내 제시어 중복 금지와 방별 최근 20개 회피 적용 | 연속 게임에서 반복 체감을 줄이기 위해 | 구현 완료 |
+| ADR-124 | 2026-08-24 | 라이어를 셔플 백으로 선정 | 특정 참가자의 연속 라이어 배정을 막고 역할 기회를 고르게 하기 위해 | 구현 완료 |
+| ADR-125 | 2026-08-24 | 라운드 결과를 8초 표시한 뒤 자동 진행 | 방장 조작 없이 게임 흐름을 유지하기 위해 | 구현 완료 |
+| ADR-126 | 2026-08-24 | 최종 결과 후 방장 명령 또는 60초 만료로 대기방 복귀 | 결과 확인 시간을 보장하면서 방이 영구 정지하지 않게 하기 위해 | 구현 완료 |
+| ADR-127 | 2026-08-24 | 초기 카테고리를 음식, 동물, 직업, 장소, 생활용품, 스포츠, 교통수단, 취미·활동으로 구성 | 보편적이고 설명하기 쉬우며 유행과 고유명사 의존이 낮기 때문에 | 구현 완료 |
+| ADR-128 | 2026-08-24 | 방장은 준비 버튼 없이 다른 활성 참가자 전원 준비 시 게임 시작 버튼 사용 | 방장의 시작 클릭 자체를 최종 참여 의사로 보고 대기방 조작을 단순화하기 위해 | 구현 완료, ADR-068 대체 |
+| ADR-129 | 2026-08-24 | 절대 마감시각과 단계 버전으로 서버 타이머 검증 | 조기 제출과 늦은 예약 콜백이 잘못된 단계를 전환하는 것을 막기 위해 | 구현 완료 |
+| ADR-130 | 2026-08-24 | 진행 상태는 메모리, 콘텐츠와 게임 결과는 PostgreSQL에 저장 | 실시간 처리 지연을 낮추면서 조회·복구 가치가 있는 데이터만 영속화하기 위해 | 구현 완료 |
+| ADR-131 | 2026-08-24 | 스냅샷을 공개 상태와 요청자 전용 상태로 투영 | 재접속 복구와 비밀 정보 격리를 함께 보장하기 위해 | 구현 완료 |
+| ADR-132 | 2026-08-24 | 공통 `GAME_ACTION` 봉투를 게임 모듈별 행동으로 분배 | 새 게임 추가 시 방 WebSocket 경계를 바꾸지 않기 위해 | 구현 완료 |
+| ADR-133 | 2026-08-24 | 같은 방 URL과 채팅 연결을 게임 전후에 유지 | 화면 전환 중 대화와 연결 문맥이 끊기지 않게 하기 위해 | 구현 완료 |
+| ADR-134 | 2026-08-24 | 네 브라우저 E2E와 비밀 정보 누출 검증을 완료 조건에 포함 | 멀티플레이 동기화와 보안 경계를 실제 사용 흐름에서 입증하기 위해 | 구현됨 · 컨테이너 E2E 검증 대기 |
+| ADR-135 | 2026-08-25 | 토론 종료 과반수는 `floor(activePlayers / 2) + 1`로 고정 | 4명일 때 2표로 끝난다는 예시보다 엄격 과반 공식이 공정성 의도와 일치하기 때문에 | 구현 확정 |
+| ADR-136 | 2026-08-25 | 토론 종료 제안 권한은 방 잠금 안에서 현재 `Room.hostId`로 검증 | 참가자 순서 추정을 제거하고 게임 중 방장 위임을 즉시 반영하기 위해 | 구현 확정 |
+| ADR-137 | 2026-08-25 | 새 활성 참가자는 즉시 0점으로 등록하되 라이어 후보는 다음 셔플 백 재충전부터 포함 | 기존 참가자의 1회씩 역할 기회를 보존하면서 중도 합류를 지원하기 위해 | 구현 확정 |
+| ADR-138 | 2026-08-25 | 마감 이후 행동을 거절하고 다음 라운드는 최신 명단 동기화로만 진행 | 타이머 경쟁 판정과 관전자 승격 누락, 4명 미만 재시작을 방지하기 위해 | 구현 확정 |
+
+### 2026-08-29 구현 및 검증 기록
+
+- 네 개의 독립 게스트 컨텍스트로 공개 방 생성·코드 입장, 정상 라운드와 첫 투표 동률 뒤 재투표, 라이어 제시어 추측 성공·실패, 최종 결과 뒤 대기방 복귀를 검증하도록 실제 UI 시나리오를 추가했다. 설정은 최초 한 번만 1라운드, 행동 15초, 토론 60초로 저장하며, 이전 준비 완료 상태가 해제되고 모든 화면에 새 요약이 전파된 뒤에만 시작한다. 토론 종료 제안 뒤에는 각 게스트의 공개 확인된 찬성 제어가 활성화될 때까지 기다린다. 역할 공개 5초와 라운드 결과 8초는 서버의 실제 마감시각을 기다리도록 작성했으며, 테스트 전용 시간 단축 경로는 추가하지 않았다.
+- 역할 공개 중 시민 브라우저를 새로고침해 같은 역할·제시어·현재 단계를 요청자 전용 스냅샷으로 복구하는지 확인한다. 라이어의 DOM, 모든 브라우저의 `localStorage`/`sessionStorage`, 브라우저 콘솔에는 시민 제시어 또는 비공개 상태 키가 남지 않는지도 검증한다. 라운드 결과의 정답 공개는 게임 규칙상 의도된 공개이므로 비밀성 검사는 역할 공개 단계에서 수행한다.
+- `all` 카테고리는 가상 pack이 아니라 모든 활성 `LIAR` pack을 합치는 조회 경로로 고쳤다. 구체 pack 조회, 제외 ID, 정렬은 그대로 유지한다. PostgreSQL 통합 테스트는 `all`에서 6개 제외 뒤 394개의 중복 없는 항목과 남은 용량 판정을 요구하도록 추가했다.
+- 실제 확인: 2026-08-29에 Playwright 테스트 목록이 새 시나리오를 포함해 3개 파일 9개 테스트로 해석됐고, 프런트엔드 전체 Vitest는 13개 파일 99개 테스트 통과, 프로덕션 빌드는 `vue-tsc --noEmit`과 Vite 빌드를 통과했다. 실제 패키지 컨테이너의 Playwright 여정은 아직 실행되지 않았으며, 따라서 E2E 완료로 기록하지 않는다.
+- 알려진 검증 제한: 이 호스트에서 Docker 엔진 named pipe가 생성되지 않았고 Docker Desktop을 숨김으로 시작한 뒤에도 `com.docker.service`를 열 권한이 없어 시작할 수 없었다. 따라서 `docker build`, Compose 기동, 패키지 컨테이너 HTTP readiness, 실제 Playwright 실행 및 전체 E2E 통과는 이 기록 시점에 확인하지 못했다. Gradle도 이 환경에서 daemon loopback 연결을 만들지 못해 백엔드 전체 테스트와 새 PostgreSQL 통합 테스트를 재실행하지 못했다. 이 항목들은 Docker와 Gradle의 로컬 실행 권한이 복구된 호스트에서 다시 실행해야 한다.
+
+---
+
+# Liar Game Vertical Slice Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 게스트 네 명이 공통 게임 엔진 위에서 라이어 게임을 시작해 모든 분기와 재접속을 거쳐 최종 결과 후 대기방으로 복귀할 수 있게 한다.
+
+**Architecture:** 기존 메모리 `Room`과 방별 잠금을 유지하면서 `GameRuntime`과 게임 모듈 계약을 추가한다. 라이어 상태 머신은 순수 Java로 구현하고, 응용 계층이 PostgreSQL 콘텐츠·세션 저장, 서버 타이머, STOMP 공개·개인 이벤트를 연결한다. Vue는 기존 방 스냅샷과 이벤트 순서 복구 위에 공개 게임 상태와 본인 전용 상태를 투영한다.
+
+**Tech Stack:** Java 21, Spring Boot 4.1.1, Gradle Kotlin DSL, PostgreSQL, Flyway, Vue 3.5.41, TypeScript 5.9.3, Pinia 4.0.3, STOMP.js 7.3.0, Vitest 4.1.11, Playwright 1.62.1
+
+**Spec:** 이 파일의 `2026-08-24 공통 게임 엔진과 라이어 게임 설계` 절과 ADR-117~ADR-134
+
+## Global Constraints
+
+- 모바일·PC 브라우저를 모두 지원하고 설치를 요구하지 않는다.
+- 1차 런타임은 Cloud Run 단일 인스턴스, `max-instances=1`이며 활성 게임 상태는 메모리에 둔다.
+- REST는 인증·진입·요청자별 스냅샷, STOMP는 방 안 명령과 공개·개인 이벤트를 담당한다.
+- 서버가 상태, 마감시각, 권한과 점수의 최종 권한자이며 모든 변경 명령은 UUID `requestId`로 멱등 처리한다.
+- 역할, 제시어와 비공개 투표는 공개 payload와 일반 로그에 포함하지 않는다.
+- 도메인 코드는 Spring, JPA, WebSocket과 실제 시계 타입에 의존하지 않는다.
+- 기존 인증·로비·방·채팅 API와 테스트를 깨뜨리지 않는다.
+- 각 구현 작업은 실패 테스트를 먼저 확인하고 해당 작업의 테스트가 통과한 뒤 커밋한다.
+
+## Planned File Structure
+
+```text
+backend/src/main/java/com/minigame/platform/
+├─ game/
+│  ├─ domain/
+│  │  ├─ GameAction.java                 # 검증된 게임 행동
+│  │  ├─ GameContent.java                # 게임 시작 콘텐츠 marker
+│  │  ├─ GameDeadline.java               # 세션·라운드·단계 버전·마감시각 토큰
+│  │  ├─ GameModule.java                 # 게임 모듈 SPI
+│  │  ├─ GamePlayer.java                 # 게임에 고정된 참가자 값 객체
+│  │  ├─ GameProjection.java             # 공개 상태와 요청자 전용 상태
+│  │  ├─ GameRuntime.java                # 공통 세션·점수·현재 게임 상태
+│  │  ├─ GameSettings.java               # 라운드·시간·콘텐츠 선택 설정
+│  │  ├─ GameSignal.java                 # 공개 또는 개인 전송이 필요한 도메인 신호
+│  │  ├─ GameStartContext.java           # 참가자·설정·콘텐츠·시각·난수 입력
+│  │  ├─ GameState.java                  # 게임별 상태 marker
+│  │  ├─ GameTransition.java             # 다음 상태·이벤트·예약 지시
+│  │  └─ liar/
+│  │     ├─ LiarGameModule.java          # 라이어 상태 머신 진입점
+│  │     ├─ LiarGameState.java           # 역할·단계·힌트·투표 상태
+│  │     ├─ LiarPhase.java               # 단계 enum
+│  │     ├─ LiarProjection.java          # 공개·개인 DTO
+│  │     ├─ LiarScoring.java             # 판정과 점수 계산
+│  │     ├─ LiarWord.java                # 콘텐츠 ID·카테고리·정답·별칭 값 객체
+│  │     └─ TextNormalizer.java           # 힌트·역전 추측 정규화
+│  ├─ application/
+│  │  ├─ GameApplicationService.java     # 시작·행동·만료·이탈 조정
+│  │  ├─ GameModuleRegistry.java         # GameType → GameModule
+│  │  ├─ GameSchedulePort.java           # 취소 가능한 마감 예약 포트
+│  │  ├─ GameSessionPort.java            # RUNNING/COMPLETED/INTERRUPTED 저장 포트
+│  │  └─ LiarContentPort.java            # 카테고리·제시어 조회 포트
+│  └─ adapter/out/
+│     ├─ persistence/                    # 콘텐츠·세션 JPA 엔티티와 어댑터
+│     └─ scheduling/SpringGameScheduler.java
+├─ room/domain/Room.java                 # GameRuntime 보유와 게임 변경 순번
+└─ room/...                              # 기존 스냅샷·게이트웨이·presence 연결
+
+frontend/src/features/games/
+├─ gameTypes.ts                          # 공개·개인 상태 discriminated union
+├─ GameShell.vue                         # 라운드·단계·타이머·점수 공통 레이아웃
+└─ liar/
+   ├─ LiarGameView.vue                   # 단계 컴포넌트 분배
+   ├─ RoleRevealPanel.vue
+   ├─ HintPanel.vue
+   ├─ DiscussionPanel.vue
+   ├─ VotePanel.vue
+   └─ LiarResultPanel.vue
+```
+
+### Task 1: 방장 시작 조건과 준비 상태 계약
+
+**Files:**
+- Modify: `backend/src/main/java/com/minigame/platform/room/domain/Room.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/domain/RoomEvent.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/application/RoomApplicationService.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/adapter/in/web/RoomWebDtos.java`
+- Test: `backend/src/test/java/com/minigame/platform/room/domain/RoomTest.java`
+- Modify: `backend/src/test/java/com/minigame/platform/room/domain/RoomFixture.java`
+- Test: `backend/src/test/java/com/minigame/platform/room/application/RoomApplicationServiceTest.java`
+
+**Interfaces:**
+- Produces: `Room.Snapshot.participantsReadyToStart(): boolean`
+- Produces: `RoomSnapshotView.canStart(): boolean`
+- Rule: 방장은 `changeReady`를 호출할 수 없고 `ROOM_HOST_CANNOT_READY`를 받는다.
+
+- [ ] **Step 1: 방장 준비 금지와 시작 가능 계산의 실패 테스트 작성**
+
+```java
+@Test
+void host_does_not_ready_and_other_active_players_unlock_start() {
+    var room = RoomFixture.roomWithFourParticipants();
+    assertThatThrownBy(() -> room.changeReady(RoomFixture.HOST, true, RoomFixture.requestId("host-ready")))
+        .isInstanceOfSatisfying(RoomRuleViolation.class,
+            error -> assertThat(error.code()).isEqualTo("ROOM_HOST_CANNOT_READY"));
+
+    for (var actorId : List.of(RoomFixture.GUEST_1, RoomFixture.GUEST_2, RoomFixture.GUEST_3)) {
+        room.changeReady(actorId, true, RoomFixture.requestId("ready-" + actorId.value()));
+    }
+    assertThat(room.snapshot().participantsReadyToStart()).isTrue();
+}
+```
+
+- [ ] **Step 2: 테스트를 실행해 새 계약이 없어 실패하는지 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.room.domain.RoomTest"`
+
+Expected: FAIL because the host rule and `participantsReadyToStart` do not exist.
+
+- [ ] **Step 3: 방장 제외 준비 계산과 이벤트 payload 구현**
+
+```java
+public boolean participantsReadyToStart() {
+    return activeParticipantCount() >= settings.gameType().minimumParticipants()
+        && participants.values().stream()
+            .filter(player -> !player.spectator())
+            .filter(player -> !player.actorId().equals(hostId))
+            .allMatch(Participant::ready);
+}
+```
+
+`changeReady`에서 `actorId.equals(hostId)`를 먼저 검사한다. 설정 변경과 새로운 활성 참가자 입장 시 방장이 아닌 참가자의 `ready`를 `false`로 바꾼다. `RoomSettings`는 라이어 게임에 대해 라운드 1~5, 행동 시간 15~45초, 토론 시간 60~180초를 검증한다. 이 작업의 `canStart`는 참가자 조건을 나타내며 Task 6에서 콘텐츠 가용성과 결합한다.
+
+- [ ] **Step 4: 방 도메인과 응용 서비스 테스트 통과 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.room.domain.RoomTest" --tests "com.minigame.platform.room.application.RoomApplicationServiceTest"`
+
+Expected: PASS
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add backend/src/main/java/com/minigame/platform/room backend/src/test/java/com/minigame/platform/room
+git commit -m "feat: make host control room game start"
+```
+
+### Task 2: PostgreSQL 콘텐츠와 게임 결과 저장 경계
+
+**Files:**
+- Create: `backend/src/main/resources/db/migration/V2__create_game_content_and_sessions.sql`
+- Create: `backend/src/main/resources/db/migration/V3__seed_liar_content.sql`
+- Create: `backend/src/main/java/com/minigame/platform/game/application/LiarContentPort.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/application/GameSessionPort.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/application/RunningGameSessionRecovery.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameContent.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarWord.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/ContentPackEntity.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/ContentItemEntity.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/GameSessionEntity.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/GameParticipantEntity.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/JpaLiarContentAdapter.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/persistence/JpaGameSessionAdapter.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/adapter/out/persistence/GamePersistenceIntegrationTest.java`
+
+**Interfaces:**
+- Produces: `LiarContentPort.select(String categoryCode, Set<UUID> excludedIds, int limit): List<LiarWord>`
+- Produces: `LiarContentPort.available(String categoryCode, Set<UUID> excludedIds, int required): boolean`
+- Produces: `GameSessionPort.start(StartGameSession): UUID`
+- Produces: `GameSessionPort.complete(UUID sessionId, List<GameParticipantResult> results, Instant endedAt): void`
+- Produces: `GameSessionPort.interruptRunning(Instant interruptedAt): int`
+
+- [ ] **Step 1: 실제 PostgreSQL에서 스키마와 400개 시드를 검증하는 실패 테스트 작성**
+
+```java
+@Test
+void migrations_seed_eight_liar_categories_with_fifty_unique_items_each() {
+    var counts = jdbc.queryForList("""
+        select p.code, count(*) item_count, count(distinct i.normalized_value) unique_count
+          from content_packs p join content_items i on i.pack_id = p.id
+         where p.game_type = 'LIAR' and p.active and i.active
+         group by p.code order by p.code
+        """);
+    assertThat(counts).hasSize(8);
+    assertThat(counts).allSatisfy(row -> {
+        assertThat(row.get("item_count")).isEqualTo(50L);
+        assertThat(row.get("unique_count")).isEqualTo(50L);
+    });
+}
+```
+
+- [ ] **Step 2: 통합 테스트를 실행해 V2/V3 부재로 실패 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.adapter.out.persistence.GamePersistenceIntegrationTest"`
+
+Expected: FAIL because the content and session tables do not exist.
+
+- [ ] **Step 3: V2 스키마와 제약조건 구현**
+
+`content_packs(code, game_type, display_name, active)`, `content_items(pack_id, value, normalized_value, aliases JSONB, active)`, `game_sessions(room_id, game_type, status, settings JSONB, started_at, ended_at)`, `game_participants(session_id, actor_id, nickname, score, rank, rounds_played)`를 만든다. `(pack_id, normalized_value)`와 `(session_id, actor_id)`에 unique 제약을 둔다. 상태는 `RUNNING`, `COMPLETED`, `INTERRUPTED` check constraint로 제한한다.
+
+- [ ] **Step 4: V3에 카테고리별 50개의 명시적 한국어 제시어 삽입**
+
+카테고리 코드는 `food`, `animal`, `job`, `place`, `household`, `sports`, `transport`, `hobby`로 고정한다. 각 카테고리에 정확히 50개의 보편 명사를 넣고 `normalized_value`는 공백과 문장부호를 제거한 소문자 값으로 저장한다. 카테고리 안의 정규화 중복과 8개 카테고리 사이의 동일 제시어를 허용하지 않는다.
+
+- [ ] **Step 5: JPA 어댑터와 RUNNING 세션 정리 구현**
+
+```java
+public interface LiarContentPort {
+    boolean available(String categoryCode, Set<UUID> excludedIds, int required);
+    List<LiarWord> select(String categoryCode, Set<UUID> excludedIds, int limit);
+}
+
+public interface GameSessionPort {
+    UUID start(StartGameSession command);
+    void complete(UUID sessionId, List<GameParticipantResult> results, Instant endedAt);
+    int interruptRunning(Instant interruptedAt);
+}
+```
+
+`StartGameSession`은 세션 ID, 방 ID, 게임 종류, 설정 JSON, 시작시각을 가지며 `GameParticipantResult`는 actor ID, 닉네임 스냅샷, 점수, 공동 순위, 참여 라운드 수를 가진 `GameSessionPort`의 중첩 record로 정의한다. 애플리케이션 시작 시 `RunningGameSessionRecovery`가 `ApplicationReadyEvent`에서 `interruptRunning(clock.instant())`를 한 번 호출한다.
+
+- [ ] **Step 6: 마이그레이션·콘텐츠·세션 전환 통합 테스트 통과 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.adapter.out.persistence.GamePersistenceIntegrationTest"`
+
+Expected: PASS with 8 categories and 400 unique active items.
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add backend/src/main/resources/db/migration backend/src/main/java/com/minigame/platform/game backend/src/test/java/com/minigame/platform/game
+git commit -m "feat: persist liar content and game results"
+```
+
+### Task 3: 공통 게임 모듈과 서버 마감 예약
+
+**Files:**
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameAction.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameDeadline.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameModule.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GamePlayer.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameProjection.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameRuntime.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameSettings.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameSignal.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameStartContext.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameState.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/GameTransition.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/application/GameModuleRegistry.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/application/GameSchedulePort.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/adapter/out/scheduling/SpringGameScheduler.java`
+- Modify: `backend/src/main/java/com/minigame/platform/shared/config/RoomConfig.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/application/GameModuleRegistryTest.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/adapter/out/scheduling/SpringGameSchedulerTest.java`
+
+**Interfaces:**
+- Produces: `GameModule.start(GameStartContext): GameTransition`
+- Produces: `GameModule.handle(GameState, ActorId, GameAction, Instant): GameTransition`
+- Produces: `GameModule.expire(GameState, GameDeadline, Instant): GameTransition`
+- Produces: `GameModule.removePlayer(GameState, ActorId, Instant): GameTransition`
+- Produces: `GameModule.synchronizePlayers(GameState, List<GamePlayer>, Instant): GameTransition`
+- Produces: `GameModule.project(GameState, ActorId): GameProjection`
+- Produces: `GameSchedulePort.schedule(RoomId, GameDeadline, Runnable): Cancellation`
+
+- [ ] **Step 1: 레지스트리 중복과 오래된 타이머 무시 계약의 실패 테스트 작성**
+
+```java
+@Test
+void registry_rejects_duplicate_game_type() {
+    assertThatThrownBy(() -> new GameModuleRegistry(List.of(liarModule, secondLiarModule)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("LIAR");
+}
+
+@Test
+void deadline_matches_only_the_same_session_round_and_phase_version() {
+    var expected = new GameDeadline(sessionId, 2, 7, deadline);
+    assertThat(expected.matches(sessionId, 2, 7)).isTrue();
+    assertThat(expected.matches(sessionId, 2, 8)).isFalse();
+}
+```
+
+- [ ] **Step 2: 테스트를 실행해 공통 계약 부재로 실패 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.*"`
+
+Expected: FAIL because the common game types do not exist.
+
+- [ ] **Step 3: 순수 도메인 계약 구현**
+
+```java
+public interface GameModule {
+    GameType type();
+    GameTransition start(GameStartContext context);
+    GameTransition handle(GameState state, ActorId actorId, GameAction action, Instant now);
+    GameTransition expire(GameState state, GameDeadline expected, Instant now);
+    GameTransition removePlayer(GameState state, ActorId actorId, Instant now);
+    GameTransition synchronizePlayers(GameState state, List<GamePlayer> players, Instant now);
+    GameProjection project(GameState state, ActorId viewer);
+}
+
+public record GameProjection(View publicState, Optional<View> privateState) {
+    public interface View {}
+}
+
+public record GameSignal(String type, Map<String, Object> payload, Optional<ActorId> recipient) {
+    public GameSignal {
+        if (type == null || type.isBlank()) throw new IllegalArgumentException("signal type");
+        payload = Map.copyOf(Objects.requireNonNull(payload, "payload"));
+        recipient = Objects.requireNonNull(recipient, "recipient");
+    }
+    public static GameSignal publicSignal(String type, Map<String, Object> payload) {
+        return new GameSignal(type, payload, Optional.empty());
+    }
+    public static GameSignal privateSignal(ActorId recipient, String type, Map<String, Object> payload) {
+        return new GameSignal(type, payload, Optional.of(recipient));
+    }
+}
+
+public record GameTransition(
+    GameState state,
+    List<GameSignal> signals,
+    Map<ActorId, Integer> scoreDeltas,
+    Optional<GameDeadline> deadline,
+    boolean completed
+) {}
+```
+
+`GameSchedulePort`는 `Cancellation schedule(RoomId roomId, GameDeadline deadline, Runnable callback)`과 중첩 `@FunctionalInterface Cancellation { void cancel(); }`을 정의한다. `GameStartContext`는 세션 ID, `List<GamePlayer>`, `GameSettings`, 라운드 수만큼 미리 고른 `List<GameContent>`, 현재 시각과 `RandomGenerator`를 가진다. `LiarWord`는 `GameContent`를 구현하며 라이어 모듈은 다른 콘텐츠 타입을 `GAME_CONTENT_INVALID`로 거절한다. `GameRuntime`은 세션 ID, 게임 종류, 현재 `GameState`, 누적 점수, 세션에서 사용한 콘텐츠 ID와 처리한 요청 ID 최대 1,024개를 소유한다. 게임 간 최근 콘텐츠 20개는 Task 6에서 `Room`에 유지한다.
+
+- [ ] **Step 4: 한 스레드의 `ThreadPoolTaskScheduler`와 취소 포트 구현**
+
+`SpringGameScheduler`는 절대 `GameDeadline.at()`에 작업을 예약하고 취소 핸들을 반환한다. 실제 콜백은 상태를 직접 바꾸지 않고 `GameApplicationService.expire(roomId, deadline)`만 호출한다.
+
+- [ ] **Step 5: 공통 게임 테스트 통과 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.application.GameModuleRegistryTest" --tests "com.minigame.platform.game.adapter.out.scheduling.SpringGameSchedulerTest"`
+
+Expected: PASS
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add backend/src/main/java/com/minigame/platform/game backend/src/main/java/com/minigame/platform/shared/config/RoomConfig.java backend/src/test/java/com/minigame/platform/game
+git commit -m "feat: add common game runtime contracts"
+```
+
+### Task 4: 라이어 역할·제시어·순차 힌트 상태 머신
+
+**Files:**
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarPhase.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarGameState.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarGameModule.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarProjection.java`
+- Modify: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarWord.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/TextNormalizer.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/domain/liar/LiarGameModuleTest.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/domain/liar/TextNormalizerTest.java`
+
+**Interfaces:**
+- Consumes: Task 3 `GameModule`, `GameTransition`, `GameDeadline`
+- Produces: `LiarGameModule` for `GameType.LIAR`
+- Produces actions: `HINT_SUBMIT`
+- Produces phases: `ROLE_REVEAL`, `HINTING`, `DISCUSSING`
+
+- [ ] **Step 1: 고정 난수로 역할 공정성·비밀 투영·힌트 차례 테스트 작성**
+
+```java
+@Test
+void citizen_receives_word_while_liar_receives_only_category() {
+    var transition = module.start(fourPlayersContext(word("food", "붕어빵"), fixedRandom));
+    var state = (LiarGameState) transition.state();
+    var liar = state.liarId();
+    var liarView = (LiarProjection.PrivateState) module.project(state, liar).privateState().orElseThrow();
+    assertThat(liarView.word()).isNull();
+    assertThat(state.players()).filteredOn(id -> !id.equals(liar)).allSatisfy(citizen -> {
+        var citizenView = (LiarProjection.PrivateState)
+            module.project(state, citizen).privateState().orElseThrow();
+        assertThat(citizenView.word()).isEqualTo("붕어빵");
+    });
+}
+
+@Test
+void only_current_player_can_submit_one_sentence_without_the_word() {
+    var state = hintingState("붕어빵");
+    assertViolation(() -> module.handle(state, otherPlayer, action("HINT_SUBMIT", "겨울 음식"), now),
+        "GAME_NOT_YOUR_TURN");
+    assertViolation(() -> module.handle(state, currentPlayer, action("HINT_SUBMIT", "붕어빵 같아요"), now),
+        "GAME_HINT_INVALID");
+}
+```
+
+- [ ] **Step 2: 테스트를 실행해 라이어 모듈 부재로 실패 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.domain.liar.*"`
+
+Expected: FAIL because the liar state machine does not exist.
+
+- [ ] **Step 3: 역할 공개와 셔플 백 구현**
+
+`ROLE_REVEAL`은 5초 마감시각을 가진다. 셔플 백에서 참가자 한 명을 꺼내 라이어로 사용하며 백이 비면 현재 활성 참가자를 다시 섞는다. 참가자 변경 시 존재하지 않는 ID를 백에서 제거하고 새 참가자를 다음 재충전 때 포함한다.
+
+`LiarProjection.PublicState`와 `LiarProjection.PrivateState`는 `GameProjection.View`를 구현한다. `PrivateState`는 `role`, `category`, nullable `word`, `hintSubmitted`, `voteSubmitted`만 가지며 다른 참가자의 값을 받는 생성 경로를 제공하지 않는다.
+
+- [ ] **Step 4: 힌트 검증과 순차 전환 구현**
+
+`TextNormalizer`는 Unicode NFKC, 소문자화, 공백과 일반 문장부호 제거를 순서대로 적용한다. 힌트는 줄바꿈 또는 문장 종결 부호가 두 개 이상이면 거절한다. 현재 참가자의 정상 제출과 시간 만료 `SKIPPED`는 다음 참가자로 이동하며 마지막 힌트 뒤 `DISCUSSING`으로 전환한다.
+
+- [ ] **Step 5: 역할·힌트 테스트 통과 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.domain.liar.*"`
+
+Expected: PASS
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add backend/src/main/java/com/minigame/platform/game/domain/liar backend/src/test/java/com/minigame/platform/game/domain/liar
+git commit -m "feat: implement liar roles and hint phase"
+```
+
+### Task 5: 토론·투표·역전 추측·점수와 이탈 규칙
+
+**Files:**
+- Modify: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarGameState.java`
+- Modify: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarGameModule.java`
+- Create: `backend/src/main/java/com/minigame/platform/game/domain/liar/LiarScoring.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/domain/liar/LiarVotingTest.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/domain/liar/LiarDepartureTest.java`
+
+**Interfaces:**
+- Produces actions: `DISCUSSION_END_PROPOSE`, `DISCUSSION_END_VOTE`, `VOTE_SUBMIT`, `REVOTE_SUBMIT`, `LIAR_GUESS_SUBMIT`
+- Produces phases: `VOTING`, `REVOTING`, `LIAR_GUESSING`, `ROUND_RESULT`, `GAME_RESULT`
+- Implements: Task 3 `GameModule.removePlayer(GameState, ActorId, Instant): GameTransition`
+- Implements: Task 3 `GameModule.synchronizePlayers(GameState, List<GamePlayer>, Instant): GameTransition`
+
+- [ ] **Step 1: 모든 판정 분기의 실패 테스트 작성**
+
+```java
+@Test
+void host_proposal_counts_as_yes_and_majority_ends_discussion() {
+    var state = discussingWithFourPlayers();
+    state = apply(state, host, "DISCUSSION_END_PROPOSE", Map.of());
+    assertThat(state.discussionEndVotes()).containsExactly(host);
+    state = apply(state, player2, "DISCUSSION_END_VOTE", Map.of("agree", true));
+    assertThat(state.phase()).isEqualTo(LiarPhase.DISCUSSION);
+    state = apply(state, player3, "DISCUSSION_END_VOTE", Map.of("agree", true));
+    assertThat(state.phase()).isEqualTo(LiarPhase.VOTING);
+}
+
+@Test
+void one_tie_revote_then_second_tie_means_liar_survives() {
+    var firstTie = submitVotes(votingState(), votesCreatingTie());
+    assertThat(((LiarGameState) firstTie.state()).phase()).isEqualTo(LiarPhase.REVOTING);
+    var secondTie = submitVotes((LiarGameState) firstTie.state(), revotesCreatingTie());
+    var resultState = (LiarGameState) secondTie.state();
+    assertThat(resultState.roundResult().winner()).isEqualTo("LIAR");
+    assertThat(secondTie.scoreDeltas().get(resultState.liarId())).isEqualTo(3);
+}
+```
+
+이와 함께 전체 기권, 라이어 지목 후 정답 성공 2점, 실패 시 시민 각 1점, 라이어 이탈, 시민 이탈, 4명 미만 무효 라운드, 다음 라운드에 합류한 새 참가자의 0점 시작과 다음 셔플 백 재충전부터의 역할 후보 포함을 각각 독립 테스트로 작성한다.
+
+- [ ] **Step 2: 투표 테스트를 실행해 미구현 단계로 실패 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.domain.liar.LiarVotingTest" --tests "com.minigame.platform.game.domain.liar.LiarDepartureTest"`
+
+Expected: FAIL on the first unsupported action.
+
+- [ ] **Step 3: 토론 종료와 비공개 투표 구현**
+
+과반수는 `activePlayers / 2 + 1` 정수 계산으로 구한다. 투표 map은 `voterId → targetId`만 저장하고 공개 투영에는 voter ID 집합만 포함한다. 자기 자신 투표와 두 번째 제출은 각각 `GAME_TARGET_INVALID`, `GAME_ALREADY_SUBMITTED`로 거절한다. 시간 만료는 미제출자를 기권으로 두고 현재 map만 집계하며 모든 유효 참가자가 제출하면 즉시 집계한다.
+
+- [ ] **Step 4: 재투표·역전 추측·점수 구현**
+
+재투표 후보는 첫 투표 공동 최다 득표자로 고정한다. 재동률과 전체 기권은 라이어 생존이다. 유일한 최다 득표자가 라이어인 경우에만 `LIAR_GUESSING`으로 이동하며 `TextNormalizer`로 정답·별칭을 비교한다. `LiarScoring`은 라운드 결과를 입력받아 `GameTransition.scoreDeltas`를 반환하고 `GameRuntime`이 누적 점수와 공동 순위를 계산한다.
+
+- [ ] **Step 5: 이탈과 라운드/게임 결과 자동 전환 구현**
+
+라이어 이탈 또는 남은 활성 참가자 4명 미만은 `invalidated=true` 결과를 만들고 점수를 바꾸지 않는다. `ROUND_RESULT`은 8초, `GAME_RESULT`는 60초 마감시각을 사용한다. 결과 단계의 이탈은 확정된 결과·단계·마감시각을 다시 쓰지 않는다. 마지막 라운드가 아니면 `synchronizePlayers`로 전달받은 최신 활성 참가자를 반영하고, 4명 미만이면 다음 라운드 대신 `GAME_RESULT`로 끝낸다. `GameRuntime.synchronizePlayers`는 새 참가자를 0점으로 추가하면서 이탈자의 누적 결과를 보존한다. 새 참가자는 현재 비어 있지 않은 라이어 백에는 추가하지 않고 다음 재충전부터 포함하며, 떠난 참가자는 즉시 후보에서 제거한다.
+
+- [ ] **Step 6: 라이어 전체 도메인 테스트 통과 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.domain.liar.*"`
+
+Expected: PASS
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add backend/src/main/java/com/minigame/platform/game/domain/liar backend/src/test/java/com/minigame/platform/game/domain/liar
+git commit -m "feat: complete liar voting and scoring rules"
+```
+
+### Task 6: 방 잠금 안의 게임 조정과 공개·개인 STOMP 투영
+
+**Files:**
+- Create: `backend/src/main/java/com/minigame/platform/game/application/GameApplicationService.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/domain/Room.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/domain/RoomEvent.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/application/ActiveRoomRepository.java`
+- Create: `backend/src/main/java/com/minigame/platform/room/application/LockedRoomResult.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/adapter/out/memory/InMemoryActiveRoomRepository.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/application/RoomApplicationService.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/adapter/in/realtime/RoomCommandGateway.java`
+- Modify: `backend/src/main/java/com/minigame/platform/room/adapter/in/web/RoomWebDtos.java`
+- Test: `backend/src/test/java/com/minigame/platform/game/application/GameApplicationServiceTest.java`
+- Test: `backend/src/test/java/com/minigame/platform/room/adapter/in/realtime/RoomCommandGatewayTest.java`
+- Test: `backend/src/test/java/com/minigame/platform/room/adapter/in/web/RoomControllerTest.java`
+
+**Interfaces:**
+- Produces: `GameApplicationService.start(ActorPrincipal, RoomId, String requestId): void`
+- Produces: `GameApplicationService.act(ActorPrincipal, RoomId, String requestId, String action, Map<String,Object> data): void`
+- Produces: `GameApplicationService.expire(RoomId, GameDeadline): void`
+- Produces: `GameApplicationService.participantLeft(Room, ActorId, Instant): List<GameSignal>` called within the existing room lock.
+
+- [ ] **Step 1: 시작 원자성·멱등성·비밀 누출 실패 테스트 작성**
+
+```java
+@Test
+void start_persists_running_session_before_publishing_secret_roles() {
+    service.start(host, roomId, requestId);
+    inOrder.verify(sessions).start(any(StartGameSession.class));
+    inOrder.verify(publisher).publishPublic(argThat(event -> event.type().equals("GAME_STATE_CHANGED")));
+    verify(publisher, times(4)).publishPrivate(anyString(),
+        argThat(event -> event.type().equals("GAME_PRIVATE_STATE_CHANGED")));
+}
+
+@Test
+void public_payload_never_contains_role_word_or_vote_target() {
+    service.act(player, roomId, requestId, "VOTE_SUBMIT", Map.of("targetActorId", target));
+    var json = objectMapper.writeValueAsString(publicEvents.getLast().payload());
+    assertThat(json).doesNotContain("liarId", "word", "targetActorId");
+}
+```
+
+- [ ] **Step 2: 응용·게이트웨이 테스트가 실패하는지 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test --tests "com.minigame.platform.game.application.GameApplicationServiceTest" --tests "com.minigame.platform.room.adapter.in.realtime.RoomCommandGatewayTest"`
+
+Expected: FAIL because `GAME_START`, `GAME_ACTION` and game projections are unsupported.
+
+- [ ] **Step 3: `Room`에 `GameRuntime`과 공통 게임 변경 순번 연결**
+
+`Room`은 `Optional<GameRuntime>`과 게임 간 최근 콘텐츠 ID 최대 20개를 보유하고 스냅샷에 런타임을 포함한다. `startGame`, `replaceGame`, `finishGame`에서 상태 조건과 요청 ID를 검증하며 `finishGame`은 이번 세션 콘텐츠를 최근 기록으로 옮긴다. `ActiveRoomRepository`에 `<T> LockedRoomResult<T> withRoomValue(RoomId, Function<Room,T>)`를 추가하고 `LockedRoomResult<T>`는 `T value`, `Room.Snapshot snapshot`을 가진다. 게임 시작, 행동, 시간 만료와 참가자 퇴장을 이 동일한 방 잠금 경계에서 처리한다.
+
+게임 시작은 `RoomStatus.PLAYING`, 최종 대기방 복귀는 `RoomStatus.WAITING`으로 바꾸고 로비 upsert를 발행한다. `PLAYING` 방에 입장한 사용자는 `spectator=true`로 추가한다. 다음 `ROUND_RESULT` 만료 시 빈 활성 슬롯만큼 입장 순서대로 `spectator=false`로 승격해 `PLAYER_SPECTATOR_CHANGED`를 먼저 발행하고, 최신 활성 명단을 `GameModule.synchronizePlayers`에 전달한 뒤 새 역할을 배정한다. 마지막 라운드의 `GAME_RESULT`에서는 승격하지 않고 다음 게임까지 관전 상태를 유지한다.
+
+`DISCUSSION_END_PROPOSE`는 게임 모듈에 전달하기 전에 같은 방 잠금 안에서 명령 actor와 현재 `Room.hostId`가 같은지 검사한다. 참가자 배열의 첫 원소를 방장으로 취급하지 않으며, 게임 중 방장 위임 뒤에는 새 방장만 제안할 수 있다. `ROUND_RESULT` 만료는 일반 `GameModule.expire`로 다음 라운드를 열지 않고, 위 승격 및 `GameRuntime.synchronizePlayers`를 적용한 뒤 `GameModule.synchronizePlayers`를 호출한다.
+
+- [ ] **Step 4: 게임 시작·행동·만료 조정 구현**
+
+시작 순서는 콘텐츠 선택 → 방 잠금 안에서 조건 재검증 → `RUNNING` 세션 저장 → 런타임 부착 → 이벤트 순번 증가다. 상태 변경 뒤 기존 예약을 취소하고 새 `GameDeadline`만 예약한다. 만료 콜백은 세션·라운드·단계 버전 불일치 시 조용히 종료한다.
+
+- [ ] **Step 5: STOMP 명령과 스냅샷 DTO 연결**
+
+`RoomCommandGateway`에 `GAME_START`, `GAME_ACTION`을 추가한다. `GAME_ACTION.payload`는 `action: String`, `data: Map<String,Object>`만 허용한다. REST 스냅샷은 `canStart`, `game.publicState`, `game.privateState`를 추가하고 현재 `ActorPrincipal`로 개인 투영을 만든다. `canStart`는 `participantsReadyToStart()`와 `LiarContentPort.available(categoryPack, Set.of(), rounds)`가 모두 참일 때만 참이다. 실제 시작은 최근 20개를 제외해 `select`하고 결과가 라운드 수보다 적을 때만 최근 제외를 비워 다시 조회한다.
+
+각 상태 변경은 공개 `GAME_STATE_CHANGED`와 필요한 개인 `GAME_PRIVATE_STATE_CHANGED`에 같은 방 sequence를 사용한다. `GAME_RESULT` 진입 시 공동 순위와 참여 라운드 수를 `GameSessionPort.complete`로 저장하고, `RETURN_TO_WAITING`은 완료된 런타임을 제거하되 최근 콘텐츠 기록은 보존한다.
+
+- [ ] **Step 6: leave와 presence 만료를 동일 게임 이탈 경계로 연결**
+
+수동 퇴장과 `RoomPresenceService`의 30초 유예 만료 모두 `RoomApplicationService.leave` 안에서 게임 모듈의 `removePlayer`를 먼저 적용한 뒤 참가자를 제거한다. 게임 이벤트와 `PLAYER_LEFT`는 같은 방 잠금에서 연속 순번을 얻는다.
+
+- [ ] **Step 7: 백엔드 전체 테스트 통과 확인**
+
+Run (workdir `backend`): `.\gradlew.bat test`
+
+Expected: PASS, including existing room/chat/reconnect tests.
+
+- [ ] **Step 8: 커밋**
+
+```bash
+git add backend/src/main/java/com/minigame/platform/game backend/src/main/java/com/minigame/platform/room backend/src/test/java/com/minigame/platform/game backend/src/test/java/com/minigame/platform/room
+git commit -m "feat: orchestrate liar games over room websocket"
+```
+
+### Task 7: Pinia 게임 상태, 이벤트 복구와 서버 기준 타이머
+
+**Files:**
+- Create: `frontend/src/features/games/gameTypes.ts`
+- Create: `frontend/src/features/games/deadlineClock.ts`
+- Modify: `frontend/src/features/room/roomStore.ts`
+- Test: `frontend/src/features/games/deadlineClock.spec.ts`
+- Test: `frontend/src/features/room/roomStore.spec.ts`
+
+**Interfaces:**
+- Produces: `GameSnapshot { publicState: GamePublicState; privateState: GamePrivateState | null }`
+- Produces: `room.startGame(): void`
+- Produces: `room.sendGameAction(action: LiarAction, data: Record<string, unknown>): void`
+- Produces: `remainingSeconds(deadline: string, nowMs: number): number`
+
+- [ ] **Step 1: 공개·개인 이벤트 병합과 타이머 실패 테스트 작성**
+
+```ts
+it('keeps private role data out of public state replacement', async () => {
+  await store.applyPublicEvent(event('GAME_STATE_CHANGED', { game: publicLiarState }))
+  await store.applyPrivateEvent(event('GAME_PRIVATE_STATE_CHANGED', { game: { role: 'LIAR', category: '음식' } }))
+  expect(store.snapshot?.game?.publicState).not.toHaveProperty('role')
+  expect(store.snapshot?.game?.privateState).toMatchObject({ role: 'LIAR', category: '음식' })
+})
+
+it('rounds a server deadline up without changing phase', () => {
+  expect(remainingSeconds('2026-08-24T00:00:01.100Z', Date.parse('2026-08-24T00:00:00Z'))).toBe(2)
+})
+```
+
+- [ ] **Step 2: Vitest를 실행해 새 타입과 이벤트가 없어 실패 확인**
+
+Run (workdir `frontend`): `npm.cmd test -- roomStore.spec.ts deadlineClock.spec.ts`
+
+Expected: FAIL because game state and deadline helpers do not exist.
+
+- [ ] **Step 3: discriminated union과 엄격한 sanitizer 구현**
+
+`GamePublicState`는 `gameType: 'LIAR'`와 `phase`로 구분하고 공개 허용 필드만 복사한다. `LiarPrivateState`는 `role`, `category`, 선택적 `word`, 본인 제출 상태만 허용한다. 알 수 없는 게임·단계 payload는 적용하지 않고 스냅샷 재조회로 복구한다.
+
+- [ ] **Step 4: 명령과 재접속 병합 구현**
+
+```ts
+function startGame(): void { publish('GAME_START', {}) }
+function sendGameAction(action: LiarAction, data: Record<string, unknown>): void {
+  publish('GAME_ACTION', { action, data })
+}
+```
+
+공개 이벤트는 sequencer를 진행하고 같은 sequence의 개인 보조 이벤트는 개인 상태만 갱신한다. 재접속 스냅샷은 공개·개인 상태를 함께 교체한다.
+
+- [ ] **Step 5: 프론트 상태 테스트 통과 확인**
+
+Run (workdir `frontend`): `npm.cmd test -- roomStore.spec.ts deadlineClock.spec.ts`
+
+Expected: PASS
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git add frontend/src/features/games frontend/src/features/room/roomStore.ts frontend/src/features/room/roomStore.spec.ts
+git commit -m "feat: synchronize liar game state in pinia"
+```
+
+### Task 8: 대기방 시작 버튼과 반응형 라이어 플레이 UI
+
+**Files:**
+- Create: `frontend/src/features/games/GameShell.vue`
+- Create: `frontend/src/features/games/liar/LiarGameView.vue`
+- Create: `frontend/src/features/games/liar/RoleRevealPanel.vue`
+- Create: `frontend/src/features/games/liar/HintPanel.vue`
+- Create: `frontend/src/features/games/liar/DiscussionPanel.vue`
+- Create: `frontend/src/features/games/liar/VotePanel.vue`
+- Create: `frontend/src/features/games/liar/LiarResultPanel.vue`
+- Modify: `frontend/src/features/room/RoomView.vue`
+- Modify: `frontend/src/features/room/ParticipantList.vue`
+- Modify: `frontend/src/features/room/RoomSettingsPanel.vue`
+- Test: `frontend/src/features/room/RoomView.spec.ts`
+- Test: `frontend/src/features/games/liar/LiarGameView.spec.ts`
+
+**Interfaces:**
+- Consumes: Task 7 `GameSnapshot`, `startGame`, `sendGameAction`, `remainingSeconds`
+- Produces UI actions with accessible names: `게임 시작`, `힌트 제출`, `토론 종료 제안`, `토론 종료 찬성`, `투표 제출`, `제시어 추측`, `대기방으로 돌아가기`
+
+- [ ] **Step 1: 방장과 참가자 버튼·역할별 비밀 화면 실패 테스트 작성**
+
+```ts
+it('shows an enabled game start button to the host only when canStart', async () => {
+  const wrapper = mountRoom({ actorId: 'host', hostId: 'host', canStart: true, status: 'WAITING' })
+  expect(wrapper.get('[data-action="start-game"]').attributes('disabled')).toBeUndefined()
+  expect(wrapper.find('[data-action="ready"]').exists()).toBe(false)
+})
+
+it('never renders the word for a liar', () => {
+  const wrapper = mountLiar({ privateState: { role: 'LIAR', category: '음식', word: null } })
+  expect(wrapper.text()).toContain('라이어')
+  expect(wrapper.text()).toContain('음식')
+  expect(wrapper.text()).not.toContain('붕어빵')
+})
+```
+
+- [ ] **Step 2: Vitest를 실행해 게임 컴포넌트 부재로 실패 확인**
+
+Run (workdir `frontend`): `npm.cmd test -- RoomView.spec.ts LiarGameView.spec.ts`
+
+Expected: FAIL because the start button and liar components do not exist.
+
+- [ ] **Step 3: WAITING과 PLAYING 화면 분기 구현**
+
+`RoomView`는 `WAITING`에서 방장에게 `게임 시작`, 일반 참가자에게 `준비하기/준비 취소`를 표시한다. `RoomSettingsPanel`은 라이어 라운드 1~5, 행동 시간 15~45초, 토론 시간 60~180초와 `all`, `food`, `animal`, `job`, `place`, `household`, `sports`, `transport`, `hobby` 카테고리만 선택하게 한다. `PLAYING`에서는 `GameShell`을 렌더링하되 기존 `RoomChat` 인스턴스, 참가자 목록과 연결 오류 UI를 유지한다. 게임 중 설정 폼은 읽기 전용이다.
+
+- [ ] **Step 4: 단계별 라이어 컴포넌트와 접근성 구현**
+
+현재 차례가 아닌 힌트 입력, 이미 제출한 투표, 재접속 중 모든 게임 입력을 비활성화한다. 투표 후보에서 본인을 제외한다. 타이머는 `aria-live="polite"`로 단계가 바뀔 때만 알리고 매초 전체 화면을 읽지 않게 한다.
+
+- [ ] **Step 5: PC 우측 채팅과 모바일 하단 드로어 유지**
+
+`GameShell`은 900px 이상에서 중앙 게임 영역과 우측 점수·참가자·채팅, 767px 이하에서 단일 열과 고정 하단 채팅 버튼을 사용한다. 키보드 Escape, 포커스 트랩과 닫은 뒤 포커스 복귀는 기존 `dialogFocus`를 재사용한다.
+
+- [ ] **Step 6: 프론트 전체 테스트와 빌드 통과 확인**
+
+Run (workdir `frontend`): `npm.cmd test`
+
+Expected: PASS
+
+Run (workdir `frontend`): `npm.cmd run build`
+
+Expected: PASS with `vue-tsc --noEmit` and Vite production build.
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add frontend/src/features/games frontend/src/features/room
+git commit -m "feat: add responsive liar game experience"
+```
+
+### Task 9: 네 사용자 컨테이너 E2E와 문서 완료 기록
+
+**Files:**
+- Create: `e2e/tests/liar-game.spec.ts`
+- Modify: `e2e/tests/helpers.ts`
+- Modify: `docs/portfolio-development-journal.md`
+
+**Interfaces:**
+- Consumes: accessible UI actions from Task 8
+- Produces: a full four-context game scenario that runs against the packaged container
+
+- [ ] **Step 1: 네 브라우저의 정상·동률·재접속 실패 E2E 작성**
+
+```ts
+test('four guests finish a liar game and return to the waiting room', async ({ browser }) => {
+  const players = await createGuestPages(browser, ['민지', '준호', '서연', '현우'])
+  const code = await createPublicRoom(players[0], `라이어-${Date.now()}`)
+  await Promise.all(players.slice(1).map(page => joinRoomByCode(page, code)))
+  await configureLiarGame(players[0], { rounds: 1, actionSeconds: 15, discussionSeconds: 60, category: 'all' })
+  await Promise.all(players.slice(1).map(page => page.getByRole('button', { name: '준비하기' }).click()))
+  await players[0].getByRole('button', { name: '게임 시작' }).click()
+  await expectAll(players, page => page.getByText(/1 \/ 1 라운드/))
+  await submitHintsInDisplayedOrder(players, ['겨울에 생각나요', '따뜻할 때 좋아요', '길에서 봤어요', '간식 같아요'])
+  await proposeAndApproveDiscussionEnd(players)
+  await submitVotesForVisibleLiar(players)
+  await submitGuessWhenRequested(players, '의도적으로 틀린 추측')
+  await expectAll(players, page => page.getByText('최종 순위'))
+  await players[0].getByRole('button', { name: '대기방으로 돌아가기' }).click()
+  await expectAll(players, page => page.getByRole('button', { name: /준비하기|게임 시작/ }))
+})
+```
+
+`helpers.ts`의 `configureLiarGame`은 라운드·행동·토론·카테고리 입력을 채우고 `설정 저장` 뒤 모든 페이지의 준비 상태가 해제됐는지 기다린다. `submitHintsInDisplayedOrder`는 각 화면의 `현재 힌트 차례` actor ID를 읽어 해당 페이지만 제출한다. `submitVotesForVisibleLiar`는 테스트 화면에서 `내 역할: 라이어`가 보이는 페이지의 닉네임을 찾아 시민 세 명은 라이어에게, 라이어는 첫 시민에게 투표하게 한다. 정상 라운드, 첫 투표 동률 후 재투표, 라이어 역전 성공·실패는 명시적인 투표 target matrix를 받는 helper로 분리한다. 역할 공개 뒤 한 브라우저를 새로고침하고 동일 역할·제시어와 현재 단계가 복원되는지 검증한다.
+
+- [ ] **Step 2: 기존 컨테이너에서 새 E2E가 실패하는지 확인**
+
+Run: `docker compose up -d --build`
+
+Run (workdir `e2e`): `npm.cmd test -- liar-game.spec.ts`
+
+Expected: FAIL because the currently packaged application has no playable liar game.
+
+- [ ] **Step 3: 실제 운영 시간 규칙으로 E2E 안정화**
+
+방 설정을 1라운드, 행동 15초, 토론 60초로 바꾸고 제출 완료와 토론 과반 동의로 즉시 전환한다. 고정 5초 역할 공개와 8초 결과 화면은 실제로 기다리며 각 기대 조건 timeout을 20초로 제한한다. 테스트 전용 서버 시간 단축 플래그는 추가하지 않는다.
+
+- [ ] **Step 4: 전체 로컬 검증**
+
+Run (workdir `backend`): `.\gradlew.bat test`
+
+Expected: PASS
+
+Run (workdir `frontend`): `npm.cmd test`
+
+Expected: PASS
+
+Run (workdir `frontend`): `npm.cmd run build`
+
+Expected: PASS
+
+Run: `docker build -t minigame:liar .`
+
+Expected: PASS
+
+Run: `docker compose up -d --build`
+
+Expected: app readiness returns HTTP 200.
+
+Run (workdir `e2e`): `npm.cmd test`
+
+Expected: PASS, including existing room/chat and new four-user liar scenarios.
+
+- [ ] **Step 5: 설계 ADR과 체크포인트를 구현 완료로 갱신**
+
+이 문서의 ADR-117~ADR-134 중 구현된 항목을 `구현 완료`로 바꾸고 실제 테스트 개수, 컨테이너 이미지 결과, 알려진 제한을 같은 날짜의 개발 기록에 추가한다. 미구현 항목은 상태를 그대로 두고 이유를 명시한다.
+
+- [ ] **Step 6: 최종 구현 커밋**
+
+```bash
+git add e2e docs/portfolio-development-journal.md
+git commit -m "test: verify four-player liar game journey"
+```
+
+## Execution Checkpoints
+
+- Task 1~3 뒤: 기존 방 기능을 유지한 채 준비 계약, DB 저장 경계, 공통 게임 인터페이스가 각각 독립 검토 가능하다.
+- Task 4~5 뒤: Spring 없이 라이어 게임의 모든 규칙과 시간 분기를 재현할 수 있다.
+- Task 6 뒤: 실제 REST/STOMP 경계에서 시작, 행동, 재접속과 비밀 투영을 검증할 수 있다.
+- Task 7~8 뒤: 모바일·PC에서 실제 플레이 UI를 단위 테스트와 프로덕션 빌드로 검증할 수 있다.
+- Task 9 뒤: 운영과 동일한 컨테이너에서 네 명의 전체 게임 흐름이 자동 검증된다.
+
+# 2026-08-29 라이어 게임 최종 리뷰 보강
+
+최종 리뷰에서 확인한 아홉 개 Important 항목과 두 개 Minor 항목을 구현 커밋 `9ef7cd49b475cd61c90cd386c65c757a0943f555`에서 함께 보강했다. 기존 공개/개인 투영의 비밀 단계 경계는 유지하고, 서버가 공개하기로 결정한 정보만 단계별 allowlist를 통해 전달한다.
+
+## 최종 리뷰 ADR
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-139 | 2026-08-29 | 게임 행동 멱등 키를 `actorId + requestId`로 구성 | 공개적으로 관찰 가능한 같은 요청 ID를 서로 다른 참가자가 사용해도 한 참가자의 행동이 다른 참가자의 행동을 제거하지 않게 하기 위해 | 구현 완료 |
+| ADR-140 | 2026-08-29 | 지원하지 않는 게임은 외부 작업 전에 거절하고, 세션 저장 뒤 방 커밋 실패는 해당 세션만 `INTERRUPTED`로 보상 | 콘텐츠 조회·예약·영속화 부작용과 고아 `RUNNING` 세션을 막고 재시도를 가능하게 하기 위해 | 구현 완료 |
+| ADR-141 | 2026-08-29 | 힌트 제출/건너뜀 이력과 재투표 후보를 서버 권위 공개 상태로 제공하고, 라이어·제시어·최종 순위는 결과 단계에서만 공개 | 이탈 뒤 힌트 순서를 보존하고 클라이언트 추론을 제거하면서 역할 공개 전 비밀 유출을 막기 위해 | 구현 완료 |
+| ADR-142 | 2026-08-29 | 마지막 라운드 종료 시 최신 활성 명단을 세션 결과와 런타임 최종 순위에 함께 반영하고 관전자 변경 이벤트를 클라이언트 명단에 적용 | 최종 경계에서 승격된 참가자의 0점·닉네임·참여 라운드 수가 DB, 공개 결과, 대기방 UI에서 서로 달라지지 않게 하기 위해 | 구현 완료 |
+| ADR-143 | 2026-08-29 | REST와 실시간 방 이벤트의 `canStart`를 동일한 콘텐츠 가용성 검사로 계산하고, PostgreSQL 세션 통합 테스트는 매 테스트 전에 세션 행을 격리 | 준비 상태만으로 시작 가능하다고 잘못 표시하는 stale UI와 다른 테스트의 `RUNNING` 행 간섭을 막기 위해 | 구현 완료 |
+
+## 반영한 최종 리뷰 항목
+
+1. 요청 ID 중복 판정을 참가자별로 분리했다.
+2. 미지원 게임 시작은 콘텐츠 선택, 스케줄 등록, 세션 저장 전에 `GAME_TYPE_UNSUPPORTED`로 종료한다.
+3. `RUNNING` 세션 저장 뒤 방 시작 토큰이 바뀌면 예약을 취소하고 해당 세션만 중단하며, 외부 오류는 `GAME_START_STATE_CHANGED`로 정규화한다.
+4. 이미 제출한 이탈 참가자의 힌트와 공개 순서는 유지하고, 아직 오지 않은 이탈 참가자의 차례만 제거하며 현재 차례 이탈은 명시적인 건너뜀으로 전진한다.
+5. 라이어의 정답 추측 성공을 시민 승리 플래그가 아니라 라이어 역전 승리와 2점으로 모델링한다.
+6. 힌트 `SUBMITTED`/`SKIPPED` 상태와 1차 동률 재투표 후보를 서버 투영에 포함한다.
+7. 라운드 결과에서만 라이어와 제시어를 공개하고, 게임 결과에서는 공동 순위·닉네임·점수·참여 라운드 수를 allowlist로 제공한다.
+8. 최종 경계의 최신 참가자 명단을 영속 결과와 공개 최종 순위에 함께 포함하고, 실시간 관전자 승격을 프런트 참가자 수와 준비 UI에 반영한다.
+9. 토론 종료 제안과 최종 대기방 복귀 버튼을 현재 방장에게만 보이고, 재투표 후보와 라이어 역전 결과 문구를 E2E 계약에 맞췄다.
+
+Minor 보강으로 `PLAYER_JOINED`, `PLAYER_READY_CHANGED`, `ROOM_SETTINGS_UPDATED`, `HOST_TRANSFERRED`, `PLAYER_LEFT`의 `canStart`를 REST 스냅샷과 같은 `GameApplicationService.canStart`에서 계산했다. `GamePersistenceIntegrationTest`는 `@BeforeEach`에서 `game_participants` 다음 `game_sessions`를 삭제해 순서와 무관하게 공유 `RUNNING` 상태를 제거한다.
+
+## 검증 증거
+
+- 변경된 백엔드 production 7개 파일을 이전 성공 빌드 클래스와 캐시 의존성에 대해 `javac -encoding UTF-8`로 정적 컴파일: exit `0`.
+- 변경된 백엔드 test 7개 파일을 같은 방식으로 정적 컴파일: exit `0`; 기존 deprecated test API note만 출력.
+- Gradle daemon을 사용하지 않는 임시 in-process JUnit runner로 변경 범위 6개 단위 테스트 클래스 실행: 최초 **80개 중 79개 성공, 1개 실패**. 세션 저장 뒤 상태 변경 시 `RoomRuleViolation`이 누출되는 실패를 확인해 게임 경계 오류를 정규화했다.
+- 같은 in-process JUnit 검증 재실행: **7 containers, 80 tests, 80 successful, 0 failed**. 임시 runner 소스는 검증 뒤 제거했다.
+- `frontend`의 `npx.cmd vitest run --reporter=json`: **26 suites, 106 tests, 106 passed, 0 failed**. 기존 Node `localStorage` experimental warning만 출력.
+- `frontend`의 `npm.cmd run build`: `vue-tsc --noEmit` 및 Vite production build 성공, 80 modules transformed.
+- `e2e`의 `npm.cmd test -- --list`: **3 files, 9 tests** 해석 성공.
+- 구현 staging 전후 `git diff --check`: whitespace error 없음.
+
+## 확인하지 못한 항목
+
+- `backend`의 `.\gradlew.bat test --tests com.minigame.platform.room.application.RoomApplicationServiceTest --no-daemon --stacktrace`와 최소 `gradlew help` 모두 `java.io.IOException: Unable to establish loopback connection`에서 daemon 연결 전에 종료됐다. 따라서 Gradle 전체 백엔드 suite는 이번 보강 환경에서 재실행하지 못했다.
+- `docker version`은 client 정보를 출력했지만 `npipe:////./pipe/docker_engine`가 없어서 daemon에 연결하지 못했다. 이 때문에 PostgreSQL Testcontainers 실행, 패키지 이미지 빌드/Compose readiness, 실제 Playwright E2E는 재실행하지 않았으며 완료로 기록하지 않는다.
+
+## 최종 재검토 후 원자성 보강
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-144 | 2026-08-29 | 콘텐츠 기반 `canStart` 조회가 실패하면 방 변경을 되돌리거나 오류로 응답하지 않고 시작 가능 여부만 `false`로 닫아 이벤트와 REST 스냅샷을 제공 | `canStart`는 방 변경 결과에 붙는 파생 정보다. 참가·준비·설정 변경을 이미 반영한 뒤 조회 예외가 전파되면 요청자는 실패를 받지만 상태는 남고, 같은 요청 ID 재시도는 멱등 no-op가 되어 실시간 이벤트까지 잃을 수 있기 때문이다. | 구현 완료 |
+
+독립 재검토에서 `GameApplicationService.canStart`의 콘텐츠 조회 예외가 `RoomApplicationService`의 이미 수락된 변경 뒤에 전파될 수 있음을 확인했다. 공통 `canStartSafely` 경계를 추가해 조회 성공 시에는 기존과 동일한 콘텐츠 기반 값을 사용하고, 실패 시에는 경고 로그와 함께 `false`를 반환한다. 따라서 방 상태·멱등 기록·이벤트는 서로 어긋나지 않고, 클라이언트는 다음 정상 권위 스냅샷까지 게임 시작 버튼을 안전하게 비활성화한다.
+
+회귀 테스트는 콘텐츠 조회가 예외를 던져도 준비 상태 변경이 성공하고 `PLAYER_READY_CHANGED(canStart=false)`가 한 번 발행되며, 같은 요청 ID 재시도에서 참가자의 준비 상태가 유지되고 이벤트가 중복되지 않는지를 검증한다. `git diff --check`는 통과했다. Gradle 집중 테스트는 권한 확장 환경에서도 task 실행 전에 기존 `java.io.IOException: Unable to establish loopback connection`으로 종료되어, 이 신규 테스트의 Gradle 실행은 확인하지 못한 상태로 남긴다.
+
+후속 제한 리뷰는 이 원자성 수정에서 Critical/Important/Minor 문제를 찾지 않았고, 기존 9개 Important와 2개 Minor도 코드와 회귀 테스트에 모두 매핑된 것으로 판단했다. 다만 후속 리뷰는 전체 변경의 재감사가 아니라 신규 커밋 중심 검토였으므로, Gradle 전체 suite·PostgreSQL 통합·패키지 Playwright E2E 통과를 병합 전 최종 조건으로 유지한다.
+
+# 2026-08-30 패키지 E2E 및 PostgreSQL 검증 완료
+
+Windows 호스트의 Java NIO 루프백 오류는 JDK 17·21과 IPv4 강제에서도 동일하게 재현됐다. 프로젝트 코드나 Gradle 버전 문제가 아니라 호스트 실행 환경 문제로 분리하고, Docker Desktop의 Linux 컨테이너에서 Gradle을 실행해 검증 경로를 복구했다. Docker 소켓은 테스트 컨테이너에 전달하지 않았다.
+
+## 검증 과정에서 확정한 ADR
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-145 | 2026-08-30 | 설정 저장 명령은 전체 방 스냅샷을 펼치지 않고 `RoomSettings`의 여섯 필드만 명시적으로 투영 | `game: null` 같은 스냅샷 전용 값이 STOMP payload에 섞여 불변 Map 역직렬화를 실패시키고 설정 이벤트를 유실한 실제 E2E 결함을 막기 위해 | 구현·E2E 검증 완료 |
+| ADR-146 | 2026-08-30 | `GAME_STATE_CHANGED(game=null)`을 대기방 복귀의 권위 이벤트로 해석해 프론트 참가자 준비 상태도 모두 초기화 | 서버는 복귀 시 준비를 초기화하지만 클라이언트가 이전 값을 유지해 다음 게임에서 `준비 취소`를 표시하던 상태 불일치를 제거하기 위해 | 구현·E2E 검증 완료 |
+| ADR-147 | 2026-08-30 | PostgreSQL 테스트는 `TEST_DB_URL/USER/PASSWORD`가 있으면 외부 격리 DB를 사용하고, 없으면 Testcontainers PostgreSQL을 직접 시작 | 호스트 Docker 소켓을 빌드 컨테이너에 노출하지 않으면서 로컬·CI 양쪽의 실제 PostgreSQL 검증을 유지하기 위해 | 외부 DB 경로 검증 완료 · Testcontainers fallback은 CI 재확인 필요 |
+
+외부 DB 경로는 파괴적인 테스트 SQL을 실행하므로 `TEST_DB_ALLOW_DESTRUCTIVE=true`를 명시하고 DB 이름이 `_test`로 끝날 때만 활성화한다. 공유·운영 DB URL 또는 opt-in 누락을 거절하는 테스트 2개와 안전한 전용 DB 허용 테스트 1개를 RED→GREEN으로 추가했다.
+
+## RED → GREEN과 패키지 증거
+
+- `RoomSettingsPanel`이 전체 스냅샷의 `roomId`, `game: null`까지 emit하는 회귀 테스트를 먼저 RED로 확인한 뒤, 설정 allowlist 투영으로 GREEN 처리했다.
+- 대기방 복귀 이벤트 뒤 준비 상태가 남는 store 테스트를 RED로 확인한 뒤, 모든 참가자의 `ready=false` 반영으로 관련 36개 테스트를 GREEN 처리했다.
+- 방/채팅 E2E는 방장에게 준비 버튼이 없다는 확정 UX에 맞게 수정했고 집중 실행 **2/2 통과**했다.
+- 힌트 입력 locator는 영역·입력·버튼을 함께 잡던 label 검색 대신 `textbox(name=힌트, exact)`로 좁혔다.
+- 프론트 전체: **14 test files, 107/107 tests 통과**.
+- 프론트 프로덕션 빌드: `vue-tsc --noEmit` 및 Vite 성공, 80 modules transformed.
+- 패키지 빌드: 멀티스테이지 Docker 이미지 `minigame:local` 생성 성공, non-root 런타임 기동 성공.
+- PostgreSQL 17 Compose 컨테이너 healthy, Flyway v1~v4 검증/적용, `/actuator/health/readiness` HTTP **200**.
+- 실제 Playwright: 배포 계약, 공개/비공개 방·채팅, 4인 라이어 실패/성공 추측·재투표·복귀를 포함해 **9/9 통과**.
+- 백엔드 전체 Gradle suite: Linux JDK 21 컨테이너에서 별도 `minigame_test` PostgreSQL에 연결해 **BUILD SUCCESSFUL**.
+- DB 안전 가드 반영 후 동일 전체 Gradle suite를 명시적 opt-in과 함께 재실행해 다시 **BUILD SUCCESSFUL**.
+
+Windows에서 직접 실행하는 Gradle은 계속 `java.io.IOException: Unable to establish loopback connection`으로 실패하지만, 동일 소스의 Linux Gradle 전체 suite와 운영형 컨테이너/E2E가 통과했으므로 코드 검증 차단은 해소됐다. Docker Desktop은 빌드 중 한 차례 종료돼 사용자 프로세스로 재시작했으며 최종 전체 검증은 복구 후 새로 실행했다.
+
+# 2026-08-31 PR CI와 운영 배포 준비
+
+사용자가 PR 병합과 운영 배포를 명시적으로 승인했다. 구현 브랜치를 푸시하고 [PR #5](https://github.com/kwon-soonil-project/SSoonilMiniGame/pull/5)를 `main` 대상으로 생성했다. 보호 규칙을 우회하지 않고 CI 통과 후 병합하며, `main` push의 자동 프리뷰 배포와 수동 workflow dispatch의 운영 승격을 사용한다. 운영은 같은 실행에서 프리뷰로 검증한 이미지 digest와 일치해야 한다. 현재 GitHub `production` 환경에는 별도 required reviewer 규칙이 없으므로 수동 workflow 실행이 승인 경계다.
+
+첫 [PR CI 실행](https://github.com/kwon-soonil-project/SSoonilMiniGame/actions/runs/33401727515)에서 백엔드 전체 Gradle 테스트와 기본 Testcontainers PostgreSQL 경로, 프론트 14개 테스트 파일 및 빌드가 통과했다. 이에 따라 ADR-147의 CI fallback 미검증 상태를 해소했다.
+
+패키지 E2E는 8개 성공, 4인 라이어 시나리오 1개 실패였고 자동 재시도에서도 같은 실패가 발생했다. 다운로드한 Playwright trace에서 마지막 힌트가 서버에 수락되고 화면이 `토론 시간`으로 바뀐 것을 확인했다. 원인은 테스트가 `isVisible()`로 토론 여부를 읽은 직후 단계가 바뀌면서, 후속 `innerText()`가 이미 사라진 힌트 차례 요소를 기다리는 TOCTOU 경쟁 조건이었다. 앱의 게임 전환 실패가 아니므로 게임 코드는 변경하지 않았다.
+
+| ADR | 날짜 | 결정 | 근거 | 상태 |
+|---|---|---|---|---|
+| ADR-148 | 2026-08-31 | E2E 힌트 전진 확인은 힌트 차례와 토론 제목의 union locator에 단일 재시도 assertion을 적용 | 두 개의 비동기 DOM 조회 사이에 단계가 바뀌어 정상 전환을 실패로 판정하는 경쟁 조건 제거. 힌트 순서와 모든 플레이어의 토론 진입 검증은 유지 | 로컬 3회 연속 통과 · PR CI 재검증 예정 |
+
+기존 패키지 앱에서 `npm test -- tests/liar-game.spec.ts --repeat-each=3 --workers=1`을 실행해 **3/3 통과(2.5분)**를 확인했다. 각 반복은 네 브라우저의 역할 복구, 오답/정답 추측, 재투표 및 대기방 복귀를 모두 포함한다. 앱 코드는 변경하지 않았으며 최종 병합 조건은 수정 SHA의 GitHub 전체 CI 성공으로 유지한다.

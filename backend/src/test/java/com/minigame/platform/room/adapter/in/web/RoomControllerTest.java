@@ -4,6 +4,7 @@ import com.minigame.platform.auth.application.SessionTokenService;
 import com.minigame.platform.auth.adapter.in.web.CsrfController;
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.application.ActiveRoomRepository;
 import com.minigame.platform.room.application.ChatPolicy;
@@ -28,6 +29,8 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.Map;
+import java.util.Optional;
 
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.not;
@@ -37,6 +40,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
 @WebMvcTest(
         controllers = {RoomController.class, CsrfController.class},
@@ -73,9 +78,31 @@ class RoomControllerTest {
     @MockitoBean
     RoomEventPublisher eventPublisher;
 
+    @MockitoBean
+    GameApplicationService games;
+
     @BeforeEach
     void clearRooms() {
         repository.findAll().forEach(room -> repository.remove(room.id()));
+    }
+
+    @Test
+    void snapshot_separates_public_and_requester_private_game_state() throws Exception {
+        var room = createRoom(HOST, "게임 스냅샷 방", null, "LIAR");
+        when(games.snapshot(any(), any())).thenReturn(Optional.of(
+                new GameApplicationService.GameSnapshotView(
+                        Map.of("gameType", "LIAR", "phase", "ROLE_REVEAL"),
+                        Map.of("role", "LIAR", "category", "all")
+                )
+        ));
+
+        mockMvc.perform(get("/api/v1/rooms/{roomId}/snapshot", room.roomId())
+                        .cookie(session(HOST)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.game.publicState.gameType").value("LIAR"))
+                .andExpect(jsonPath("$.game.publicState.phase").value("ROLE_REVEAL"))
+                .andExpect(jsonPath("$.game.publicState.role").doesNotExist())
+                .andExpect(jsonPath("$.game.privateState.role").value("LIAR"));
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.minigame.platform.room.adapter.in.realtime;
 
 import com.minigame.platform.auth.domain.ActorId;
 import com.minigame.platform.auth.domain.ActorPrincipal;
+import com.minigame.platform.game.application.GameApplicationService;
 import com.minigame.platform.room.adapter.out.memory.InMemoryActiveRoomRepository;
 import com.minigame.platform.room.application.ChatPolicy;
 import com.minigame.platform.room.application.ActiveRoomRepository;
@@ -36,16 +37,21 @@ import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class RoomCommandGatewayTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-08-23T01:00:00Z"), ZoneOffset.UTC);
     private static final ActorPrincipal HOST = ActorPrincipal.guest(new ActorId("realtime-host"), "방장감자");
+    private static final ActorPrincipal GUEST = ActorPrincipal.guest(new ActorId("realtime-guest"), "참가감자");
     private static final String READY_REQUEST = "00000000-0000-0000-0000-000000005101";
 
     private RecordingPublisher publisher;
     private RoomApplicationService rooms;
     private ChatPolicy chatPolicy;
     private RoomCommandGateway gateway;
+    private GameApplicationService games;
     private UUID roomId;
 
     @BeforeEach
@@ -69,14 +75,71 @@ class RoomCommandGatewayTest {
         );
         roomId = UUID.fromString(created.roomId());
         publisher.clear();
-        gateway = new RoomCommandGateway(rooms, chatPolicy, publisher, CLOCK);
+        games = mock(GameApplicationService.class);
+        gateway = new RoomCommandGateway(rooms, games, chatPolicy, publisher, CLOCK);
+    }
+
+    @Test
+    void dispatches_strict_game_start_and_action_envelopes() {
+        var startRequest = "00000000-0000-0000-0000-000000005140";
+        var actionRequest = "00000000-0000-0000-0000-000000005141";
+
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(startRequest, "GAME_START", Map.of()));
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(actionRequest, "GAME_ACTION", Map.of(
+                        "action", "HINT_SUBMIT",
+                        "data", Map.of("hint", "달콤해요")
+                )));
+
+        verify(games).start(HOST, new RoomId(roomId), startRequest);
+        verify(games).act(HOST, new RoomId(roomId), actionRequest,
+                "HINT_SUBMIT", Map.of("hint", "달콤해요"));
+    }
+
+    @Test
+    void rejects_game_action_payload_with_extra_or_non_map_fields_privately() {
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(
+                        "00000000-0000-0000-0000-000000005142",
+                        "GAME_ACTION",
+                        Map.of("action", "HINT_SUBMIT", "data", "not-a-map", "extra", true)
+                ));
+
+        verifyNoInteractions(games);
+        assertThat(publisher.publicEvents).isEmpty();
+        assertThat(publisher.privateEvents).singleElement().satisfies(delivery ->
+                assertThat(delivery.event().payload())
+                        .isEqualTo(Map.of("code", "ROOM_COMMAND_INVALID")));
+    }
+
+    @Test
+    void rejects_null_nested_game_action_data_privately() {
+        var data = new java.util.LinkedHashMap<String, Object>();
+        data.put("hint", null);
+
+        gateway.handle(roomId, HOST,
+                new RoomCommands.RoomCommand(
+                        "00000000-0000-0000-0000-000000005143",
+                        "GAME_ACTION",
+                        Map.of("action", "HINT_SUBMIT", "data", data)
+                ));
+
+        verifyNoInteractions(games);
+        assertThat(publisher.publicEvents).isEmpty();
+        assertThat(publisher.privateEvents).singleElement().satisfies(delivery ->
+                assertThat(delivery.event().payload())
+                        .isEqualTo(Map.of("code", "ROOM_COMMAND_INVALID")));
     }
 
     @Test
     void publishesReadyEventWithRoomSequence() {
+        rooms.join(GUEST, new RoomCode(rooms.snapshot(HOST, new RoomId(roomId)).code()), null,
+                "00000000-0000-0000-0000-000000005099");
+        publisher.clear();
         gateway.handle(
                 roomId,
-                HOST,
+                GUEST,
                 new RoomCommands.RoomCommand(READY_REQUEST, "PLAYER_READY", Map.of("ready", true))
         );
 
@@ -84,21 +147,24 @@ class RoomCommandGatewayTest {
         assertThat(event.type()).isEqualTo("PLAYER_READY_CHANGED");
         assertThat(event.requestId()).isEqualTo(READY_REQUEST);
         assertThat(event.roomId()).isEqualTo(roomId);
-        assertThat(event.actorId()).isEqualTo("realtime-host");
-        assertThat(event.sequence()).isEqualTo(1L);
+        assertThat(event.actorId()).isEqualTo("realtime-guest");
+        assertThat(event.sequence()).isEqualTo(2L);
         assertThat(event.occurredAt()).isEqualTo(CLOCK.instant());
-        assertThat(event.payload()).isEqualTo(Map.of("actorId", "realtime-host", "ready", true));
+        assertThat(event.payload()).isEqualTo(Map.of("actorId", "realtime-guest", "ready", true, "canStart", false));
     }
 
     @Test
     void suppressesDuplicateReadyRequestWithinTheActorAndCommandScope() {
+        rooms.join(GUEST, new RoomCode(rooms.snapshot(HOST, new RoomId(roomId)).code()), null,
+                "00000000-0000-0000-0000-000000005099");
+        publisher.clear();
         var command = new RoomCommands.RoomCommand(READY_REQUEST, "PLAYER_READY", Map.of("ready", true));
 
-        gateway.handle(roomId, HOST, command);
-        gateway.handle(roomId, HOST, command);
+        gateway.handle(roomId, GUEST, command);
+        gateway.handle(roomId, GUEST, command);
 
         assertThat(publisher.publicEvents).hasSize(1);
-        assertThat(rooms.snapshot(HOST, new RoomId(roomId)).sequence()).isEqualTo(1L);
+        assertThat(rooms.snapshot(HOST, new RoomId(roomId)).sequence()).isEqualTo(2L);
     }
 
     @Test
@@ -166,6 +232,7 @@ class RoomCommandGatewayTest {
                 "00000000-0000-0000-0000-000000005108"
         );
         var orderedRoomId = UUID.fromString(created.roomId());
+        orderedRooms.join(GUEST, new RoomCode(created.code()), null, "00000000-0000-0000-0000-000000005107");
         orderedPublisher.clear();
         var orderedGateway = new RoomCommandGateway(
                 orderedRooms,
@@ -188,7 +255,7 @@ class RoomCommandGatewayTest {
 
             orderedGateway.handle(
                     orderedRoomId,
-                    HOST,
+                    GUEST,
                     new RoomCommands.RoomCommand(
                             "00000000-0000-0000-0000-000000005110",
                             "PLAYER_READY",
@@ -200,7 +267,7 @@ class RoomCommandGatewayTest {
         }
 
         assertThat(orderedPublisher.publicEvents).extracting(EventEnvelope::sequence)
-                .containsExactly(1L, 2L);
+                .containsExactly(2L, 3L);
         assertThat(orderedPublisher.publicEvents).extracting(EventEnvelope::type)
                 .containsExactly("CHAT_MESSAGE", "PLAYER_READY_CHANGED");
     }
